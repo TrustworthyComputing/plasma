@@ -166,7 +166,7 @@ where
             .iter()
             .map(|node| node.value.clone())
             .collect::<Vec<T>>();
-        println!("...done");
+        // println!("...done");
 
         self.frontier = next_frontier;
         values
@@ -191,7 +191,7 @@ where
             .iter()
             .map(|node| node.value.clone())
             .collect::<Vec<U>>();
-        println!("...done");
+        // println!("...done");
 
         self.frontier_last = next_frontier;
         values
@@ -233,7 +233,7 @@ where
             .collect::<Vec<sketch::SketchOutput<T>>>();
 
         //PROFILER.lock().unwrap().stop().unwrap();
-        println!("... Done");
+        // println!("... Done");
 
         out
     }
@@ -274,7 +274,7 @@ where
             .collect::<Vec<sketch::SketchOutput<U>>>();
 
         //PROFILER.lock().unwrap().stop().unwrap();
-        println!("... Done");
+        // println!("... Done");
 
         out
     }

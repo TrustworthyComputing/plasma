@@ -155,14 +155,14 @@ impl rand::RngCore for PrgStream {
     }
 
     fn fill_bytes(&mut self, dest: &mut [u8]) {
-        println!("1) dest {:?}", dest);
+        // println!("1) dest {:?}", dest);
         for v in dest.iter() {
             debug_assert_eq!(*v, 0u8);
         }
 // TODO: encrypt
         // let mut rng = thread_rng();
 
-        println!("dest {}", dest.len());
+        // println!("dest {}", dest.len());
         self.stream.apply_keystream(dest);
         // rng.fill(dest);                    // array fill
 
@@ -173,7 +173,7 @@ impl rand::RngCore for PrgStream {
         // for i in 0..AES_BLOCK_SIZE {
         //     dest[i] = slb[i];
         // }
-        println!("2) dest {:?}", dest);
+        // println!("2) dest {:?}", dest);
     }
 
     fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), rand::Error> {
