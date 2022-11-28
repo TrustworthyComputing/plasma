@@ -1,11 +1,11 @@
 {
-  "data_len": 64,
-  "threshold": 0.001,
+  "data_len": 8,
+  "threshold": 0.0001,
   "server0": "0.0.0.0:8000",
   "server1": "0.0.0.0:8001",
   "addkey_batch_size": 100,
-  "sketch_batch_size": 100000,
-  "sketch_batch_size_last": 25000,
+  "sketch_batch_size": 1,
+  "sketch_batch_size_last": 1,
   "num_sites": 100,
   "zipf_exponent": 1.03
 }

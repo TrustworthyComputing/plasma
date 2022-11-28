@@ -179,33 +179,32 @@ async fn run_level(
     nreqs: usize,
     start_time: Instant,
 ) -> io::Result<usize> {
-    let threshold64 = core::cmp::max(1, (cfg.threshold * (nreqs as f64)) as u64);
-    let threshold = fastfield::FE::new(threshold64);
+    let threshold = fastfield::FE::new(0);
 
     // Tree crawl
-    println!(
-        "TreeCrawlStart {:?} {:?} {:?}",
-        level,
-        "-",
-        start_time.elapsed().as_secs_f64()
-    );
+    // println!(
+    //     "TreeCrawlStart {:?} {:?} {:?}",
+    //     level,
+    //     "-",
+    //     start_time.elapsed().as_secs_f64()
+    // );
     let req = TreeCrawlRequest {};
     let response0 = client0.tree_crawl(long_context(), req.clone());
     let response1 = client1.tree_crawl(long_context(), req);
     let (vals0, vals1) = try_join!(response0, response1).unwrap();
-    println!(
-        "TreeCrawlDone {:?} {:?} {:?}",
-        level,
-        "-",
-        start_time.elapsed().as_secs_f64()
-    );
+    // println!(
+    //     "TreeCrawlDone {:?} {:?} {:?}",
+    //     level,
+    //     "-",
+    //     start_time.elapsed().as_secs_f64()
+    // );
 
-    println!(
-        "SketchStart {:?} {:?} {:?}",
-        level,
-        "-",
-        start_time.elapsed().as_secs_f64()
-    );
+    // println!(
+    //     "SketchStart {:?} {:?} {:?}",
+    //     level,
+    //     "-",
+    //     start_time.elapsed().as_secs_f64()
+    // );
 
     let sketch_start = Instant::now();
 
@@ -221,13 +220,13 @@ async fn run_level(
         }
     }
 
-    println!(
-        "SketchDone {:?} {:?} {:?} rate={:?}",
-        level,
-        "-",
-        start_time.elapsed().as_secs_f64(),
-        (nreqs as f64) / sketch_start.elapsed().as_secs_f64()
-    );
+    // println!(
+    //     "SketchDone {:?} {:?} {:?} rate={:?}",
+    //     level,
+    //     "-",
+    //     start_time.elapsed().as_secs_f64(),
+    //     (nreqs as f64) / sketch_start.elapsed().as_secs_f64()
+    // );
 
     assert_eq!(vals0.len(), vals1.len());
     let keep = collect::KeyCollection::<fastfield::FE,FieldElm>::keep_values(nreqs, &threshold, &vals0, &vals1);
@@ -250,30 +249,29 @@ async fn run_level_last(
     nreqs: usize,
     start_time: Instant,
 ) -> io::Result<usize> {
-    let threshold64 = core::cmp::max(1, (cfg.threshold * (nreqs as f64)) as u32);
-    let threshold = FieldElm::from(threshold64);
+    let threshold = FieldElm::from(0);
 
     // Tree crawl
-    println!(
-        "TreeCrawlStart last {:?} {:?}",
-        "-",
-        start_time.elapsed().as_secs_f64()
-    );
+    // println!(
+    //     "TreeCrawlStart last {:?} {:?}",
+    //     "-",
+    //     start_time.elapsed().as_secs_f64()
+    // );
     let req = TreeCrawlLastRequest {};
     let response0 = client0.tree_crawl_last(long_context(), req.clone());
     let response1 = client1.tree_crawl_last(long_context(), req);
     let (vals0, vals1) = try_join!(response0, response1).unwrap();
-    println!(
-        "TreeCrawlDone last {:?} {:?}",
-        "-",
-        start_time.elapsed().as_secs_f64()
-    );
+    // println!(
+    //     "TreeCrawlDone last {:?} {:?}",
+    //     "-",
+    //     start_time.elapsed().as_secs_f64()
+    // );
 
-    println!(
-        "SketchStart last {:?} {:?}",
-        "-",
-        start_time.elapsed().as_secs_f64()
-    );
+    // println!(
+    //     "SketchStart last {:?} {:?}",
+    //     "-",
+    //     start_time.elapsed().as_secs_f64()
+    // );
 
     let sketch_start = Instant::now();
 
@@ -289,12 +287,12 @@ async fn run_level_last(
         }
     }
 
-    println!(
-        "SketchDone last {:?} {:?} rate={:?}",
-        "-",
-        start_time.elapsed().as_secs_f64(),
-        (nreqs as f64) / sketch_start.elapsed().as_secs_f64()
-    );
+    // println!(
+    //     "SketchDone last {:?} {:?} rate={:?}",
+    //     "-",
+    //     start_time.elapsed().as_secs_f64(),
+    //     (nreqs as f64) / sketch_start.elapsed().as_secs_f64()
+    // );
 
     assert_eq!(vals0.len(), vals1.len());
     let keep = collect::KeyCollection::<fastfield::FE,FieldElm>::keep_values_last(nreqs, &threshold, &vals0, &vals1);
@@ -407,12 +405,12 @@ async fn main() -> io::Result<()> {
     for level in 0..cfg.data_len-1 {
         let active_paths = run_level(&cfg, &mut client0, &mut client1, level, nreqs, start).await?;
 
-        println!(
-            "Level {:?} active_paths={:?} {:?}",
-            level,
-            active_paths,
-            start.elapsed().as_secs_f64()
-        );
+        // println!(
+        //     "Level {:?} active_paths={:?} {:?}",
+        //     level,
+        //     active_paths,
+        //     start.elapsed().as_secs_f64()
+        // );
     }
 
     let active_paths = run_level_last(&cfg, &mut client0, &mut client1, nreqs, start).await?;

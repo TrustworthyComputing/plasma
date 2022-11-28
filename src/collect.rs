@@ -148,7 +148,7 @@ where
     }
 
     pub fn tree_crawl(&mut self) -> Vec<T> {
-        println!("Crawl");
+        // println!("Crawl");
         let next_frontier = self
             .frontier
             .par_iter()
@@ -166,14 +166,14 @@ where
             .iter()
             .map(|node| node.value.clone())
             .collect::<Vec<T>>();
-        println!("...done");
+        // println!("...done");
 
         self.frontier = next_frontier;
         values
     }
 
     pub fn tree_crawl_last(&mut self) -> Vec<U> {
-        println!("Crawl");
+        // println!("Crawl");
         let next_frontier = self
             .frontier
             .par_iter()
@@ -191,7 +191,7 @@ where
             .iter()
             .map(|node| node.value.clone())
             .collect::<Vec<U>>();
-        println!("...done");
+        // println!("...done");
 
         self.frontier_last = next_frontier;
         values
@@ -202,7 +202,7 @@ where
         start: usize,
         end: usize,
     ) -> Vec<sketch::SketchOutput<T>> {
-        println!("Sketching frontier {:?} to {:?}", start, end);
+        // println!("Sketching frontier {:?} to {:?}", start, end);
         // sketch_vectors[i][j] = { j'th value expanded from i'th key }
 
         assert!(start < end);
@@ -233,7 +233,7 @@ where
             .collect::<Vec<sketch::SketchOutput<T>>>();
 
         //PROFILER.lock().unwrap().stop().unwrap();
-        println!("... Done");
+        // println!("... Done");
 
         out
     }
@@ -243,7 +243,7 @@ where
         start: usize,
         end: usize,
     ) -> Vec<sketch::SketchOutput<U>> {
-        println!("Sketching frontier {:?} to {:?}", start, end);
+        // println!("Sketching frontier {:?} to {:?}", start, end);
         // sketch_vectors[i][j] = { j'th value expanded from i'th key }
 
         assert!(start < end);
@@ -274,7 +274,7 @@ where
             .collect::<Vec<sketch::SketchOutput<U>>>();
 
         //PROFILER.lock().unwrap().stop().unwrap();
-        println!("... Done");
+        // println!("... Done");
 
         out
     }
