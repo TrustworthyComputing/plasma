@@ -148,7 +148,7 @@ where
     }
 
     pub fn tree_crawl(&mut self) -> Vec<T> {
-        println!("Crawl");
+        // println!("Crawl");
         let next_frontier = self
             .frontier
             .par_iter()
@@ -202,7 +202,7 @@ where
         start: usize,
         end: usize,
     ) -> Vec<sketch::SketchOutput<T>> {
-        println!("Sketching frontier {:?} to {:?}", start, end);
+        // println!("Sketching frontier {:?} to {:?}", start, end);
         // sketch_vectors[i][j] = { j'th value expanded from i'th key }
 
         assert!(start < end);
@@ -243,7 +243,7 @@ where
         start: usize,
         end: usize,
     ) -> Vec<sketch::SketchOutput<U>> {
-        println!("Sketching frontier {:?} to {:?}", start, end);
+        // println!("Sketching frontier {:?} to {:?}", start, end);
         // sketch_vectors[i][j] = { j'th value expanded from i'th key }
 
         assert!(start < end);
