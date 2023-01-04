@@ -177,7 +177,7 @@ async fn run_level(
     client1: &mut dpf_codes::CollectorClient,
     level: usize,
     nreqs: usize,
-    start_time: Instant,
+    _start_time: Instant,
 ) -> io::Result<usize> {
     let threshold64 = core::cmp::max(1, (cfg.threshold * (nreqs as f64)) as u64);
     let threshold = fastfield::FE::new(threshold64);
@@ -187,7 +187,7 @@ async fn run_level(
     //     "TreeCrawlStart {:?} {:?} {:?}",
     //     level,
     //     "-",
-    //     start_time.elapsed().as_secs_f64()
+    //     _start_time.elapsed().as_secs_f64()
     // );
     let req = TreeCrawlRequest {};
     let response0 = client0.tree_crawl(long_context(), req.clone());
@@ -197,17 +197,17 @@ async fn run_level(
     //     "TreeCrawlDone {:?} {:?} {:?}",
     //     level,
     //     "-",
-    //     start_time.elapsed().as_secs_f64()
+    //     _start_time.elapsed().as_secs_f64()
     // );
 
     // println!(
     //     "SketchStart {:?} {:?} {:?}",
     //     level,
     //     "-",
-    //     start_time.elapsed().as_secs_f64()
+    //     _start_time.elapsed().as_secs_f64()
     // );
 
-    let sketch_start = Instant::now();
+    let _sketch_start = Instant::now();
 
     // Run sketching in chunks of cfg.sketch_batch_size to avoid having huge RPC messages.
     let mut start = 0;
@@ -226,7 +226,7 @@ async fn run_level(
     //     level,
     //     "-",
     //     start_time.elapsed().as_secs_f64(),
-    //     (nreqs as f64) / sketch_start.elapsed().as_secs_f64()
+    //     (nreqs as f64) / _sketch_start.elapsed().as_secs_f64()
     // );
 
     assert_eq!(vals0.len(), vals1.len());
@@ -248,7 +248,7 @@ async fn run_level_last(
     client0: &mut dpf_codes::CollectorClient,
     client1: &mut dpf_codes::CollectorClient,
     nreqs: usize,
-    start_time: Instant,
+    _start_time: Instant,
 ) -> io::Result<usize> {
     let threshold64 = core::cmp::max(1, (cfg.threshold * (nreqs as f64)) as u32);
     let threshold = FieldElm::from(threshold64);
@@ -257,7 +257,7 @@ async fn run_level_last(
     // println!(
     //     "TreeCrawlStart last {:?} {:?}",
     //     "-",
-    //     start_time.elapsed().as_secs_f64()
+    //     _start_time.elapsed().as_secs_f64()
     // );
     let req = TreeCrawlLastRequest {};
     let response0 = client0.tree_crawl_last(long_context(), req.clone());
@@ -266,16 +266,16 @@ async fn run_level_last(
     // println!(
     //     "TreeCrawlDone last {:?} {:?}",
     //     "-",
-    //     start_time.elapsed().as_secs_f64()
+    //     _start_time.elapsed().as_secs_f64()
     // );
 
     // println!(
     //     "SketchStart last {:?} {:?}",
     //     "-",
-    //     start_time.elapsed().as_secs_f64()
+    //     _start_time.elapsed().as_secs_f64()
     // );
 
-    let sketch_start = Instant::now();
+    // let _sketch_start = Instant::now();
 
     // Run sketching in chunks of cfg.sketch_batch_size to avoid having huge RPC messages.
     let mut start = 0;
@@ -289,12 +289,12 @@ async fn run_level_last(
         }
     }
 
-    println!(
-        "SketchDone last {:?} {:?} rate={:?}",
-        "-",
-        start_time.elapsed().as_secs_f64(),
-        (nreqs as f64) / sketch_start.elapsed().as_secs_f64()
-    );
+    // println!(
+    //     "SketchDone last {:?} {:?} rate={:?}",
+    //     "-",
+    //     _start_time.elapsed().as_secs_f64(),
+    //     (nreqs as f64) / sketch_start.elapsed().as_secs_f64()
+    // );
 
     assert_eq!(vals0.len(), vals1.len());
     let keep = collect::KeyCollection::<fastfield::FE,FieldElm>::keep_values_last(nreqs, &threshold, &vals0, &vals1);
@@ -405,25 +405,31 @@ async fn main() -> io::Result<()> {
 
     let start = Instant::now();
     for level in 0..cfg.data_len-1 {
+        let level_time = Instant::now();
         let active_paths = run_level(&cfg, &mut client0, &mut client1, level, nreqs, start).await?;
 
         println!(
-            "Level {:?} active_paths={:?} {:?}",
+            "Level {:?} active: {:?}, time for level: {:.3} - total time: {:.2}",
             level,
             active_paths,
+            level_time.elapsed().as_secs_f64(),
             start.elapsed().as_secs_f64()
         );
     }
 
+    let level_time = Instant::now();
     let active_paths = run_level_last(&cfg, &mut client0, &mut client1, nreqs, start).await?;
     println!(
-        "Level {:?} active_paths={:?} {:?}",
-        cfg.data_len,
+        "Level {:?} active: {:?}, time for level: {:.3} - total time: {:.2}",
+        cfg.data_len-1,
         active_paths,
+        level_time.elapsed().as_secs_f64(),
         start.elapsed().as_secs_f64()
     );
 
     final_shares(&mut client0, &mut client1).await?;
+
+    println!("Total time {:.3} sec.", start.elapsed().as_secs_f64());
 
     Ok(())
 }
