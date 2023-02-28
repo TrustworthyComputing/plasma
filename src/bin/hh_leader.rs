@@ -29,6 +29,9 @@ use tarpc::{client, context, tokio_serde::formats::Bincode, serde_transport::tcp
 type Key = dpf::DPFKey<fastfield::FE,FieldElm>;
 type Client = HHCollectorClient;
 
+static mut TOTAL_COMM_ONE_SESSION: usize = 0;
+static mut TOTAL_COMM: usize = 0;
+
 fn long_context() -> context::Context {
     let mut ctx = context::current();
 
@@ -341,6 +344,11 @@ async fn run_level(
     join_all(responses).await;
 
     let (vals0, vals1) = (response_00.await?.unwrap(), response_01.await?.unwrap());
+    let encoded: Vec<u8> = bincode::serialize(&vals0).unwrap();
+    unsafe {
+        TOTAL_COMM_ONE_SESSION += encoded.len();
+        TOTAL_COMM += encoded.len() * 3;
+    }
 
     debug_assert_eq!(vals0.len(), vals1.len());
     let mut responses = vec![];
@@ -487,6 +495,17 @@ async fn run_level_last(
     let ((hashes_020, tau_vals_020), (hashes_021, tau_vals_021)) =
         (response_020.await?.unwrap(), response_021.await?.unwrap());
 
+    let encoded: Vec<u8> = bincode::serialize(&hashes_00).unwrap();
+    unsafe {
+        TOTAL_COMM_ONE_SESSION += encoded.len();
+        TOTAL_COMM += encoded.len() * 3;
+    }
+    let encoded: Vec<u8> = bincode::serialize(&tau_vals_00).unwrap();
+    unsafe {
+        TOTAL_COMM_ONE_SESSION += encoded.len();
+        TOTAL_COMM += encoded.len() * 3;
+    }
+
     debug_assert_eq!(hashes_00.len(), hashes_01.len());
     debug_assert_eq!(hashes_11.len(), hashes_12.len());
     debug_assert_eq!(hashes_11.len(), hashes_12.len());
@@ -601,6 +620,11 @@ async fn run_level_last(
     let (shares_22, shares_20) = 
         (response_22.await?.unwrap(), response_20.await?.unwrap());
 
+    let encoded: Vec<u8> = bincode::serialize(&shares_00).unwrap();
+    unsafe {
+        TOTAL_COMM_ONE_SESSION += encoded.len();
+        TOTAL_COMM += encoded.len() * 3;
+    }
     // let keep = collect::KeyCollection::<fastfield::FE,FieldElm>::keep_values_last(num_clients, &threshold, &shares_00, &shares_01);
     // println!("KeepLast : {:?}", keep);
     // println!("KeepLen Last: {:?}", keep.len());
@@ -765,10 +789,19 @@ async fn main() -> io::Result<()> {
     }
     println!("Time for {} levels: {:?}", bitlen, start.elapsed().as_secs_f64());
 
+    unsafe {
+        println!("Total communication before last (1 session): {} bytes", TOTAL_COMM_ONE_SESSION);
+        println!("Total communication before last: {} bytes", TOTAL_COMM);
+    }
     let start_last = Instant::now();
     run_level_last(&clients, nreqs).await?;
     println!("Time for last level: {:?}", start_last.elapsed().as_secs_f64());
     println!("Total time {:?}", start.elapsed().as_secs_f64());
+
+    unsafe {
+        println!("Total communication (1 session): {} bytes", TOTAL_COMM_ONE_SESSION);
+        println!("Total communication: {} bytes", TOTAL_COMM);
+    }
 
     Ok(())
 }
