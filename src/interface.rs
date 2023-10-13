@@ -1,6 +1,6 @@
+use bitvec::prelude::*;
 use geo::Point;
 use std::cmp;
-use bitvec::prelude::*;
 
 use crate::codearea::CodeArea;
 
@@ -252,7 +252,6 @@ pub fn from_bit_string(bv: &BitVec) -> String {
 
     code
 }
-
 
 /// Remove characters from the start of an OLC code.
 ///

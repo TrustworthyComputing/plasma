@@ -4,8 +4,8 @@
     "server_0": "0.0.0.0:8000",
     "server_1": "0.0.0.0:8001",
     "server_2": "0.0.0.0:8002",
-    "addkey_batch_size": 100,
-    "unique_buckets": 10,
+    "addkey_batch_size": 1000,
+    "hashes_batch_size": 100000,
+    "unique_buckets": 100,
     "zipf_exponent": 1.03
   }
-  

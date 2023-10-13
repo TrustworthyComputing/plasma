@@ -1,7 +1,4 @@
 // A separator used to break the code into two parts to aid memorability.
-pub const BATCH: bool = false;
-
-// A separator used to break the code into two parts to aid memorability.
 pub const SEPARATOR: char = '+';
 
 // The number of characters to place before the separator.
@@ -13,8 +10,8 @@ pub const PADDING_CHAR_STR: &str = "0";
 
 // The character set used to encode the values.
 pub const CODE_ALPHABET: [char; 20] = [
-    '2', '3', '4', '5', '6', '7', '8', '9',
-    'C', 'F', 'G', 'H', 'J', 'M', 'P', 'Q', 'R', 'V', 'W', 'X'
+    '2', '3', '4', '5', '6', '7', '8', '9', 'C', 'F', 'G', 'H', 'J', 'M', 'P', 'Q', 'R', 'V', 'W',
+    'X',
 ];
 
 // The base to use to convert numbers to/from.

@@ -1,15 +1,11 @@
-// extern crate cpuprofiler;
-
 pub mod codearea;
-pub mod consts;
 pub mod collect;
 pub mod config;
+pub mod consts;
 pub mod dpf;
-pub mod fastfield;
 mod field;
 pub mod prg;
-pub mod histogram_rpc;
-pub mod hh_rpc;
+pub mod rpc;
 
 extern crate geo;
 
@@ -18,17 +14,14 @@ mod private;
 pub use codearea::CodeArea;
 
 mod interface;
-pub use interface::{decode, encode, to_bit_string, from_bit_string, is_full, is_short, is_valid, recover_nearest, shorten};
+pub use interface::{
+    decode, encode, from_bit_string, is_full, is_short, is_valid, recover_nearest, shorten,
+    to_bit_string,
+};
 
 use rayon::prelude::*;
-use num_traits::cast::ToPrimitive;
 
-#[macro_use]
-extern crate lazy_static;
-
-pub use crate::field::FieldElm;
-pub use crate::histogram_rpc::CollectorClient as HistogramCollectorClient;
-pub use crate::hh_rpc::CollectorClient as HHCollectorClient;
+pub use crate::rpc::CollectorClient as HHCollectorClient;
 use itertools::Itertools;
 
 // Additive group, such as (Z_n, +)
@@ -36,11 +29,7 @@ pub trait Group {
     fn zero() -> Self;
     fn one() -> Self;
     fn negate(&mut self);
-    fn reduce(&mut self);
     fn add(&mut self, other: &Self);
-    fn add_lazy(&mut self, other: &Self);
-    fn mul(&mut self, other: &Self);
-    fn mul_lazy(&mut self, other: &Self);
     fn sub(&mut self, other: &Self);
     fn value(self) -> u64;
 }
@@ -105,7 +94,7 @@ pub fn bits_to_string(bits: &[bool]) -> String {
     let byte_len = bits.len() / 8;
     for b in 0..byte_len {
         let byte = &bits[8 * b..8 * (b + 1)];
-        let ubyte = bits_to_u8(&byte);
+        let ubyte = bits_to_u8(byte);
         out.push_str(std::str::from_utf8(&[ubyte]).unwrap());
     }
 
@@ -116,53 +105,41 @@ pub fn bits_to_bitstring(bits: &[bool]) -> String {
     let mut out: String = "".to_string();
     for b in bits {
         if *b {
-            out.push_str("1" );
+            out.push('1');
         } else {
-            out.push_str("0" );
+            out.push('0');
         }
     }
 
     out
 }
 
-pub fn xor_vec(v1: &Vec<u8>, v2: &Vec<u8>) -> Vec<u8> {
-    v1.iter().zip_eq(v2.iter()).map(|(&x1, &x2)| x1 ^ x2).collect()
+pub fn xor_vec(v1: &[u8], v2: &[u8]) -> Vec<u8> {
+    v1.iter()
+        .zip_eq(v2.iter())
+        .map(|(&x1, &x2)| x1 ^ x2)
+        .collect()
 }
 
-pub fn xor_three_vecs(v1: &Vec<u8>, v2: &Vec<u8>, v3: &Vec<u8>) -> Vec<u8> {
-    v1.iter().zip_eq(v2.iter()).zip_eq(v3.iter()).map(|((&x1, &x2), &x3)| x1 ^ x2 ^ x3).collect()
+pub fn xor_in_place(v1: &mut [u8], v2: &[u8]) {
+    for (x1, &x2) in v1.iter_mut().zip_eq(v2.iter()) {
+        *x1 ^= x2;
+    }
 }
 
-pub fn check_hashes(
-    verified: &mut Vec<bool>,
-    hashes_0: &Vec<Vec<u8>>,
-    hashes_1: &Vec<Vec<u8>>
-) {
-    verified
-        .par_iter_mut()
-        .zip(hashes_0)
-        .zip(hashes_1)
-        .for_each(|((v, h0), h1)| {
-            if h0.len() != h0.iter().zip_eq(h1.iter()).filter(|&(h0, h1)| h0 == h1).count() {
-                *v = false;
-            }
-        });
+pub fn xor_three_vecs(v1: &[u8], v2: &[u8], v3: &[u8]) -> Vec<u8> {
+    v1.iter()
+        .zip_eq(v2.iter())
+        .zip_eq(v3.iter())
+        .map(|((&x1, &x2), &x3)| x1 ^ x2 ^ x3)
+        .collect()
 }
 
-pub fn check_taus(
-    verified: &mut Vec<bool>,
-    tau_vals_0: &Vec<FieldElm>,
-    tau_vals_1: &Vec<FieldElm>,
-) {
-    verified
-        .par_iter_mut()
-        .zip(tau_vals_0)
-        .zip(tau_vals_1)
-        .for_each(|((v, t0), t1)| {
-            if t0.value() != t1.value() {
-                *v = false;
-            }
-        });
+pub fn check_hashes(hashes_0: &Vec<[u8; 32]>, hashes_1: &Vec<[u8; 32]>) -> bool {
+    hashes_0
+        .par_iter()
+        .zip(hashes_1.par_iter())
+        .all(|(&h0, &h1)| h0 == h1)
 }
 
 pub fn take<T>(vec: &mut Vec<T>, index: usize) -> Option<T> {
@@ -173,43 +150,15 @@ pub fn take<T>(vec: &mut Vec<T>, index: usize) -> Option<T> {
     }
 }
 
-pub fn check_hashes_and_taus(
-    verified: &mut Vec<bool>,
-    hashes_0: &Vec<Vec<u8>>,
-    hashes_1: &Vec<Vec<u8>>,
-    tau_vals: &Vec<FieldElm>,
-    nreqs: usize,
-) {
-    let tau_check = if consts::BATCH { nreqs } else { 1 };
-    verified
-        .par_iter_mut()
-        .zip(hashes_0)
-        .zip(hashes_1)
-        .zip(tau_vals)
-        .for_each(|(((v, h0), h1), t)| {
-            if h0.len() != h0.iter().zip_eq(h1.iter()).filter(|&(h0, h1)| h0 == h1).count() {
-                match t.value().to_usize() {
-                    Some(size) => {
-                        if size != tau_check {
-                            println!("t vs t_check: {:?} {}", t.value(), tau_check);
-                        }
-                    },
-                    None => (), // println!("t of malicious client"),
-                }
-                *v = false;
-            }
-        });
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn share() {
-        let val = FieldElm::random();
+        let val = u64::random();
         let (s0, s1) = val.share();
-        let mut out = FieldElm::zero();
+        let mut out = u64::zero();
         out.add(&s0);
         out.add(&s1);
         assert_eq!(out, val);

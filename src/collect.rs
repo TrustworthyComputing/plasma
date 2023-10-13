@@ -1,20 +1,19 @@
 use crate::dpf;
 use crate::prg;
-use crate::{xor_vec, xor_three_vecs};
+use crate::{xor_in_place, xor_vec};
 
-use rayon::prelude::*;
-use serde::{Deserialize, Serialize};
-use sha2::{Sha256, Digest};
 use bitvec::prelude::*;
-use rs_merkle::MerkleTree;
-use rand::Rng;
+use core::convert::TryFrom;
+use fast_math::log2_raw;
 use rand::distributions::Standard;
 use rand::prelude::Distribution;
-use fast_math::log2_raw;
-use core::convert::TryFrom;
-
-use rs_merkle::{Hasher};
-use sha2::{digest::FixedOutput};
+use rand::Rng;
+use rayon::prelude::*;
+use rs_merkle::Hasher;
+use rs_merkle::MerkleTree;
+use serde::{Deserialize, Serialize};
+use sha2::digest::FixedOutput;
+use sha2::{Digest, Sha256};
 
 #[derive(Clone)]
 pub struct Sha256Algorithm {}
@@ -35,23 +34,21 @@ struct TreeNode<T> {
     value: T,
     key_states: Vec<dpf::EvalState>,
     key_values: Vec<T>,
-    hashes: Vec<Vec<u8>>,
-    indices: Vec<usize>
 }
 
 unsafe impl<T> Send for TreeNode<T> {}
 unsafe impl<T> Sync for TreeNode<T> {}
 
 #[derive(Clone)]
-pub struct KeyCollection<T,U> {
+pub struct KeyCollection<T> {
+    server_id: i8,
     depth: usize,
-    pub keys: Vec<(bool, dpf::DPFKey<T,U>)>,
-    pub pis: Vec<Vec<Vec<u8>>>,
-    honest_clients: Vec<bool>,
+    pub keys: Vec<(bool, dpf::DPFKey<T>)>,
     frontier: Vec<TreeNode<T>>,
     prev_frontier: Vec<TreeNode<T>>,
-    frontier_last: Vec<TreeNode<U>>,
-    frontier_intermediate: Vec<(TreeNode<U>, TreeNode<U>)>,
+    final_proofs: Vec<[u8; 32]>,
+    mtree_roots: Vec<[u8; 32]>,
+    mtree_indices: Vec<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -71,11 +68,31 @@ impl Dealer {
         let mut rng = rand::thread_rng();
         let k = vec![rng.gen::<u8>() % 2, rng.gen::<u8>() % 2];
         let c = rng.gen::<u8>() % 2;
-        Dealer { kc: k[c as usize], k: k, c: c, }
+        Dealer {
+            kc: k[c as usize],
+            k,
+            c,
+        }
     }
 }
 
-impl<T,U> KeyCollection<T,U>
+impl Default for Dealer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+fn is_server_zero_in_session(server_id: i8, session_index: usize) -> bool {
+    if ((server_id == 2 || server_id == 1 || server_id == 0) && session_index == 0)
+        || (server_id == 0 && session_index == 1)
+    {
+        return true;
+    }
+
+    false
+}
+
+impl<T> KeyCollection<T>
 where
     T: crate::Share
         + std::fmt::Debug
@@ -84,30 +101,22 @@ where
         + Send
         + Sync
         + 'static,
-    U: crate::Share
-        + std::fmt::Debug
-        + std::cmp::PartialOrd
-        + std::convert::From<u32>
-        + Send
-        + Sync,
 {
-    pub fn new(_seed: &prg::PrgSeed, depth: usize) -> KeyCollection<T,U> {
-        KeyCollection::<T,U> {
+    pub fn new(server_id: i8, _seed: &prg::PrgSeed, depth: usize) -> KeyCollection<T> {
+        KeyCollection::<T> {
+            server_id,
             depth,
             keys: vec![],
-            pis: vec![],
-            honest_clients: vec![],
             frontier: vec![],
             prev_frontier: vec![],
-            frontier_last: vec![],
-            frontier_intermediate: vec![],
+            final_proofs: vec![],
+            mtree_roots: vec![],
+            mtree_indices: vec![],
         }
     }
 
-    pub fn add_key(&mut self, key: dpf::DPFKey<T,U>) {
-        self.pis.push(key.cs.clone());
+    pub fn add_key(&mut self, key: dpf::DPFKey<T>) {
         self.keys.push((true, key));
-        self.honest_clients.push(true);
     }
 
     pub fn tree_init(&mut self) {
@@ -116,8 +125,6 @@ where
             value: T::zero(),
             key_states: vec![],
             key_values: vec![],
-            hashes: vec![],
-            indices: vec![],
         };
 
         for k in &self.keys {
@@ -126,100 +133,25 @@ where
         }
 
         self.frontier.clear();
-        self.frontier_last.clear();
-        self.frontier_intermediate.clear();
         self.frontier.push(root);
     }
 
-    fn make_tree_node(
-        &self, 
-        parent: &TreeNode<T>,
-        dir: bool,
-        split_by: usize,
-        malicious_indices: &Vec<usize>,
-        is_last: bool,
-    ) -> TreeNode<T> {
+    fn make_tree_node(&self, parent: &TreeNode<T>, dir: bool) -> TreeNode<T> {
+        let mut bit_str = crate::bits_to_bitstring(parent.path.as_slice());
+        bit_str.push(if dir { '1' } else { '0' });
+
         let (key_states, key_values): (Vec<dpf::EvalState>, Vec<T>) = self
             .keys
             .par_iter()
             .enumerate()
-            .map(|(i, key)| {
-                key.1.eval_bit(&parent.key_states[i], dir)
-            })
+            .map(|(i, key)| key.1.eval_bit(&parent.key_states[i], dir, &bit_str))
             .unzip();
-        let mut bit_str = crate::bits_to_bitstring(parent.path.as_slice());
-        bit_str.push(if dir {'1'} else {'0'});
+
         let mut child_val = T::zero();
-        for ((i, v), &honest_client) in key_values.iter().enumerate().zip(&self.honest_clients) {
+        for (i, v) in key_values.iter().enumerate() {
             // Add in only live values
-            if self.keys[i].0 && honest_client {
-                child_val.add_lazy(&v);
-            }
-        }
-        child_val.reduce();
-
-        let hashes: Vec<[u8; 32]> = key_states
-            .par_iter()
-            .zip(&self.honest_clients)
-            .enumerate()
-            .map(|(i, (ks, honest_client))| {
-                if !honest_client {
-                    [0u8; 32]
-                } else {
-                    let mut hasher = Sha256::new();
-                    hasher.update(&bit_str);
-                    hasher.update(ks.seed.key);
-                    let pi_prime = hasher.finalize_reset().to_vec();
-                    // Correction operation
-                    let h: [u8; 32];
-                    if !ks.bit {
-                        // H(pi ^ correct(pi_prime, cs, t0)) = H(pi ^ pi_prime)
-                        h = xor_vec(&self.pis[i][0], &pi_prime).try_into().unwrap();
-                    } else {
-                        // H(pi ^ correct(pi_prime, cs, t0)) = H(pi ^ pi_prime)
-                        let cs_t = &self.keys[i].1.cs[0];
-                        h = xor_three_vecs(&self.pis[i][0], &pi_prime, cs_t).try_into().unwrap();
-                    }
-                    hasher.update(h);
-                    xor_vec(&hasher.finalize().to_vec(), &self.pis[i][0]).try_into().unwrap()
-                }
-            })
-            .collect::<Vec<_>>();
-        let mut roots = Vec::new();
-        let mut root_indices = Vec::new();
-        if bit_str.len() < 2 && !is_last {
-            let tree_size = 1 << (hashes.len() as f32).log2().ceil() as usize;
-            let chunk_sz = tree_size/ split_by;
-            let chunks_list: Vec<&[[u8; 32]]> = hashes.chunks(chunk_sz).collect();
-            // println!("hashes.len(): {}\nchunk_sz: {}\ntree size: {}\nsplit_by: {}\n{} chunks, each of which has {} elements\nmalicious {:?}\n", 
-            //     hashes.len(),
-            //     chunk_sz,
-            //     tree_size,
-            //     split_by,
-            //     chunks_list.len(),
-            //     chunks_list[0].len(),
-            //     malicious_indices
-            // );
-            if split_by == 1 {
-                let mt = MerkleTree::<Sha256Algorithm>::from_leaves(chunks_list[0]);
-                let root = mt.root().unwrap();
-                roots.push(root.to_vec());
-                root_indices.push(0);
-            } else {
-                for &i in malicious_indices {
-                    let mt_left = MerkleTree::<Sha256Algorithm>::from_leaves(chunks_list[i * 2]);
-                    let root_left = mt_left.root().unwrap();
-                    roots.push(root_left.to_vec());
-                    root_indices.push(i * 2);
-
-                    if i * 2 + 1 >= chunks_list.len() {
-                        continue;
-                    }
-                    let mt_right = MerkleTree::<Sha256Algorithm>::from_leaves(chunks_list[i * 2 + 1]);
-                    let root_right = mt_right.root().unwrap();
-                    roots.push(root_right.to_vec());
-                    root_indices.push(i * 2 + 1);
-                }
+            if self.keys[i].0 {
+                child_val.add(v);
             }
         }
 
@@ -228,261 +160,257 @@ where
             value: child_val,
             key_states,
             key_values,
-            hashes: roots,
-            indices: root_indices,
         };
 
         child.path.push(dir);
 
-        //println!("{:?} - Child value: {:?}", child.path, child.value);
         child
     }
 
-    fn make_tree_node_last(&self, parent: &TreeNode<T>, dir: bool) -> (Vec<U>, Vec<Vec<u8>>, Vec<bool>) {
-        let (key_states, key_values): (Vec<dpf::EvalState>, Vec<U>) = self
-            .keys
-            .par_iter()
-            .enumerate()
-            .map(|(i, key)| {
-                key.1.eval_bit_last(&parent.key_states[i], dir)
-            })
-            .unzip();
-
-        let bit_str = crate::bits_to_bitstring(parent.path.as_slice());
-        // bit_str.push(if dir {'1'} else {'0'});
-        let depth = bit_str.len();
-        let mut hashes = vec![];
-        if !dir {
-            hashes = key_states
-                .par_iter()
-                .zip(&self.honest_clients)
-                .enumerate()
-                .map(|(i, (ks, honest_client))| {
-                    if !honest_client {
-                        vec![0u8; 32]
-                    } else {
-                        let mut hasher = Sha256::new();
-                        hasher.update(&bit_str);
-                        hasher.update(&parent.key_states[i].seed.key);
-                        let pi_prime = hasher.finalize().to_vec();
-                        // Correction operation
-                        let h: Vec<u8>;
-                        if !ks.bit {
-                            // H(pi ^ correct(pi_prime, cs, t0)) = H(pi ^ pi_prime)
-                            h = xor_vec(&self.pis[i][depth-1], &pi_prime);
-                        } else {
-                            // H(pi ^ correct(pi_prime, cs, t0)) = H(pi ^ pi_prime)
-                            h = xor_three_vecs(&self.pis[i][depth-1], &pi_prime, &self.keys[i].1.cs[depth-1]);
-                        }
-                        h
-                    }
-                })
-                .collect::<Vec<_>>();
-        }
-        let mut path = parent.path.clone();
-        path.push(dir);
-
-        (key_values, hashes, path)
-    }
-
-    // Adds values for "path" across multiple clients.
-    fn add_leaf_values(&self,
-        key_values: &Vec<U>,
-        path: &Vec<bool>,
-        verified: &Vec<bool>
-    ) -> TreeNode<U> {
-        let mut child_val = U::zero();
-        for ((kv, ver), honest_client) in key_values.iter().zip(verified).zip(&self.honest_clients) {
-            // Add in only live values
-            if *ver && *honest_client {
-                child_val.add_lazy(&kv);
-            }
-        }
-        child_val.reduce();
-
-        TreeNode::<U> {
-            path: path.clone(),
-            value: child_val,
-            key_states: vec![],
-            key_values: vec![],
-            hashes: vec![],
-            indices: vec![],
-        }
-    }
-
-    pub fn hh_tree_crawl(
-        &mut self, session_index: usize, split_by: usize, malicious: &Vec<usize>, is_last: bool
-    ) -> (Vec<T>, Vec<Vec<Vec<u8>>>, Vec<Vec<usize>>) {
-        if malicious.len() > 0 {
+    pub fn tree_crawl(
+        &mut self,
+        session_index: usize,
+        mut split_by: usize,
+        malicious: &Vec<usize>,
+        is_last: bool,
+    ) -> Vec<T> {
+        if !malicious.is_empty() {
             if is_last {
                 for &malicious_client in malicious {
-                    self.honest_clients[ malicious_client ] = false;
-                    println!("Session index {}) removing malicious client {}", 
+                    self.keys[malicious_client].0 = false;
+                    println!(
+                        "SID {}) removing malicious client {}",
                         session_index, malicious_client
                     );
                 }
             }
             self.frontier = self.prev_frontier.clone();
         }
-        // println!("Number of honest clients: {}", self.honest_clients.iter().filter(|&n| *n).count());
+
+        let level = self.frontier[0].path.len();
+        debug_assert!(level < self.depth);
+        // println!("Level {}", level);
 
         let next_frontier = self
             .frontier
             .par_iter()
-            .map(|node| {
-                assert!(node.path.len() <= self.depth);
-                let child0 = self.make_tree_node(node, false, split_by, malicious, is_last);
-                let child1 = self.make_tree_node(node, true, split_by, malicious, is_last);
+            .flat_map(|node| {
+                debug_assert!(node.path.len() <= self.depth);
+                let child_0 = self.make_tree_node(node, false);
+                let child_1 = self.make_tree_node(node, true);
 
-                vec![child0, child1]
+                vec![child_0, child_1]
             })
-            .flatten()
             .collect::<Vec<TreeNode<T>>>();
 
-        let values = next_frontier
-            .par_iter()
-            .map(|node| node.value.clone())
-            .collect::<Vec<T>>();
+        // Combine the multiple proofs for each client into a single proof for each client.
+        let num_clients = next_frontier.get(0).map_or(0, |node| node.key_states.len());
+        let mut key_proofs: Vec<_> = vec![[0u8; 32]; num_clients];
+        key_proofs
+            .par_iter_mut()
+            .enumerate()
+            .zip_eq(&self.keys)
+            .for_each(|((proof_index, proof), key)| {
+                if key.0 {
+                    for node in next_frontier.iter() {
+                        xor_in_place(proof, &node.key_states[proof_index].proof);
+                    }
+                }
+            });
 
-        let (hashes, indices) = next_frontier
+        // For all prefixes, compute the checks for each client.
+        let all_y_checks = self
+            .frontier
             .par_iter()
-            .map(|node| (node.hashes.clone(), node.indices.clone()))
-            .collect::<(Vec<_>, Vec<_>)>();
+            .enumerate()
+            .map(|(prefix_index, node)| {
+                let node_left = &next_frontier[2 * prefix_index];
+                let node_right = &next_frontier[2 * prefix_index + 1];
+
+                debug_assert_eq!(node.key_values.len(), node_left.key_values.len());
+                debug_assert_eq!(node.key_values.len(), node_right.key_values.len());
+
+                // For one prefix for all the clients
+                node.key_values
+                    .par_iter()
+                    .enumerate()
+                    .map(|(client_index, y_p)| {
+                        let y_p0 = &node_left.key_values[client_index];
+                        let y_p1 = &node_right.key_values[client_index];
+
+                        let mut value_check = T::zero();
+                        if level == 0 {
+                            // (1 - server_id) + (-1)^server_id * (- y^{p||0} - y^{p||1})
+                            if is_server_zero_in_session(self.server_id, session_index) {
+                                value_check.add(&T::one());
+                                value_check.sub(y_p0);
+                                value_check.sub(y_p1);
+                            } else {
+                                value_check.add(y_p0);
+                                value_check.add(y_p1);
+                            }
+                        } else {
+                            // (-1)^server_id * (y^{p} - y^{p||0} - y^{p||1})
+                            if is_server_zero_in_session(self.server_id, session_index) {
+                                value_check.add(y_p);
+                                value_check.sub(y_p0);
+                                value_check.sub(y_p1);
+                            } else {
+                                value_check.add(y_p0);
+                                value_check.add(y_p1);
+                                value_check.sub(y_p);
+                            }
+                        }
+
+                        value_check
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+
+        // Now, we combine all the checks for each client into a single check for each client.
+        let key_checks = all_y_checks[0] // parallelize the clients
+            .par_iter()
+            .enumerate()
+            .zip_eq(&self.keys)
+            .map(|((client_index, _), key)| {
+                let mut hasher = Sha256::new();
+                // If the client is honest.
+                if key.0 {
+                    all_y_checks.iter().for_each(|checks_for_prefix| {
+                        hasher.update(
+                            checks_for_prefix[client_index]
+                                .clone()
+                                .value()
+                                .to_le_bytes(),
+                        );
+                    });
+                }
+                hasher.finalize().to_vec()
+            })
+            .collect::<Vec<_>>();
+
+        debug_assert_eq!(key_proofs.len(), key_checks.len());
+
+        let combined_hashes = key_proofs
+            .par_iter()
+            .zip(key_checks.par_iter())
+            .map(|(proof, check)| xor_vec(proof, check).try_into().unwrap())
+            .collect::<Vec<[u8; 32]>>();
+
+        // Compute the Merkle tree based on y_checks for each client and the proofs.
+        // If we are at the last level, we only need to compute the root as the malicious clients
+        // have already been removed.
+        if is_last {
+            split_by = 1
+        };
+        let num_leaves = 1 << (combined_hashes.len() as f32).log2().ceil() as usize;
+        let chunk_sz = num_leaves / split_by;
+        let chunks_list = combined_hashes.chunks(chunk_sz).collect::<Vec<_>>();
+
+        self.mtree_roots = vec![];
+        self.mtree_indices = vec![];
+        if split_by == 1 {
+            let mt = MerkleTree::<Sha256Algorithm>::from_leaves(chunks_list[0]);
+            let root = mt.root().unwrap();
+            self.mtree_roots.push(root);
+            self.mtree_indices.push(0);
+        } else {
+            for &i in malicious {
+                let mt_left = MerkleTree::<Sha256Algorithm>::from_leaves(chunks_list[i * 2]);
+                let root_left = mt_left.root().unwrap();
+                self.mtree_roots.push(root_left);
+                self.mtree_indices.push(i * 2);
+
+                if i * 2 + 1 >= chunks_list.len() {
+                    continue;
+                }
+                let mt_right = MerkleTree::<Sha256Algorithm>::from_leaves(chunks_list[i * 2 + 1]);
+                let root_right = mt_right.root().unwrap();
+                self.mtree_roots.push(root_right);
+                self.mtree_indices.push(i * 2 + 1);
+            }
+        }
 
         self.prev_frontier = self.frontier.clone();
         self.frontier = next_frontier;
 
-        (values, hashes, indices)
+        // These are summed evaluations y for different prefixes.
+        self.frontier
+            .par_iter()
+            .map(|node| node.value.clone())
+            .collect::<Vec<T>>()
     }
 
-    pub fn histogram_tree_crawl(&mut self) {
-        self.frontier = self
+    pub fn get_merkle_roots(&self, start: usize, mut end: usize) -> (Vec<[u8; 32]>, Vec<usize>) {
+        let mut roots = Vec::new();
+        let mut indices = Vec::new();
+
+        if end > self.mtree_roots.len() {
+            end = self.mtree_roots.len();
+        }
+        if end > start {
+            roots.extend_from_slice(&self.mtree_roots[start..end]);
+            indices.extend_from_slice(&self.mtree_indices[start..end]);
+        }
+
+        (roots, indices)
+    }
+
+    pub fn tree_crawl_last(&mut self) -> Vec<T> {
+        let next_frontier = self
             .frontier
             .par_iter()
-            .map(|node| {
-                // assert!(node.path.len() <= self.depth);
-                let child0 = self.make_tree_node(node, false, 1, &vec![], false);
-                let child1 = self.make_tree_node(node, true, 1, &vec![], false);
+            .flat_map(|node| {
+                let child_0 = self.make_tree_node(node, false);
+                let child_1 = self.make_tree_node(node, true);
 
-                vec![child0, child1]
+                vec![child_0, child_1]
             })
-            .flatten()
             .collect::<Vec<TreeNode<T>>>();
+
+        let num_clients = next_frontier.get(0).map_or(0, |node| node.key_states.len());
+        self.final_proofs = vec![[0u8; 32]; num_clients];
+        self.final_proofs
+            .par_iter_mut()
+            .enumerate()
+            .zip_eq(&self.keys)
+            .for_each(|((proof_index, proof), key)| {
+                // If the client is honest.
+                if key.0 {
+                    for node in next_frontier.iter() {
+                        xor_in_place(proof, &node.key_states[proof_index].proof);
+                    }
+                }
+            });
+
+        self.frontier = next_frontier;
+
+        // These are summed evaluations y for different prefixes.
+        self.frontier
+            .par_iter()
+            .map(|node| node.value.clone())
+            .collect::<Vec<T>>()
     }
 
-    pub fn tree_crawl_last(&mut self) -> (Vec<Vec<u8>>, Vec<U>) {
-        self.frontier_intermediate = self
-            .frontier
+    pub fn get_y_values(&self) -> Vec<&Vec<T>> {
+        self.frontier
             .par_iter()
-            .map(|node| {
-                // assert!(node.path.len() <= self.depth);
-                let (key_values_l, hashes_l, path_l) = self.
-                    make_tree_node_last(node, false);
-                let (key_values_r, hashes_r, path_r) = self.
-                    make_tree_node_last(node, true);
-
-                (TreeNode::<U> {
-                    path: path_l,
-                    value: U::zero(),
-                    key_states: vec![],
-                    key_values: key_values_l,
-                    hashes: hashes_l,
-                    indices: vec![],
-                },
-                TreeNode::<U> {
-                    path: path_r,
-                    value: U::zero(),
-                    key_states: vec![],
-                    key_values: key_values_r,
-                    hashes: hashes_r,
-                    indices: vec![],
-                })
-            })
-            .collect::<Vec<(TreeNode<U>, TreeNode<U>)>>();
-
-        // XOR all the leaves for each client. Note: between all the leaves of 
-        // each client, not between clients.
-        let num_clients = self.frontier_intermediate[0].0.hashes.len();
-        let mut final_hashes = vec![vec![0u8; 32]; num_clients];
-        let mut tau_vals = vec![U::zero(); num_clients];
-        for node in self.frontier_intermediate.iter() {
-            final_hashes = final_hashes
-                .par_iter_mut()
-                .zip_eq(&node.0.hashes)
-                .zip_eq(&self.honest_clients)
-                .map(|((v1, v2), honest_client)| {
-                    if *honest_client {
-                        xor_vec(&v1, &v2)
-                    } else {
-                        vec![0u8; 32]
-                    }
-                })
-                .collect();
-
-            tau_vals = tau_vals
-                .par_iter_mut()
-                .zip_eq(&node.0.key_values)
-                .zip_eq(&node.1.key_values)
-                .zip_eq(&self.honest_clients)
-                .map(|(((t, v0), v1), honest_client)| {
-                    if *honest_client {
-                        t.add(&v0);
-                        t.add(&v1);
-                    }
-                    t.clone()
-                })
-                .collect();
-        }
-
-        if crate::consts::BATCH {
-            let mut batched_hash = vec![0u8; 32];
-            let mut batched_tau = U::zero();
-            for (hash, tau) in final_hashes.iter().zip(tau_vals) {
-                batched_hash = xor_vec(&batched_hash, &hash);
-                batched_tau.add(&tau);
-                println!("batched_tau {:?}", batched_tau);
-            }
-            (vec![batched_hash], vec![batched_tau])
-        } else {
-            (final_hashes, tau_vals)
-        }
-    }
-
-    pub fn get_ys(&self) -> Vec<&Vec<U>> {
-        self.frontier_intermediate
-            .par_iter()
-            .map(|node| {
-                vec![&node.0.key_values, &node.1.key_values]
-            })
-            .flatten()
+            .map(|node| &node.key_values)
             .collect::<Vec<_>>()
     }
 
-    pub fn add_leaves_between_clients(&mut self, verified: &Vec<bool>) -> Vec<Result<U>> {
-        let next_frontier = self.frontier_intermediate
-            .par_iter()
-            .map(|node| {
-                let child_l = self.add_leaf_values(
-                    &node.0.key_values, &node.0.path, verified);
-                let child_r = self.add_leaf_values(
-                    &node.1.key_values, &node.1.path, verified);
+    pub fn get_proofs(&self, start: usize, end: usize) -> Vec<[u8; 32]> {
+        let mut proofs = Vec::new();
+        if end > start && end <= self.final_proofs.len() {
+            proofs.extend_from_slice(&self.final_proofs[start..end]);
+        }
 
-                vec![child_l, child_r]
-            })
-            .flatten()
-            .collect::<Vec<TreeNode<U>>>();
-        next_frontier
-            .par_iter()
-            .map(|node| Result::<U> {
-                path: node.path.clone(),
-                value: node.value.clone(),
-            })
-            .collect::<Vec<Result<U>>>()
+        proofs
     }
 
-
     pub fn tree_prune(&mut self, alive_vals: &[bool]) {
-        assert_eq!(alive_vals.len(), self.frontier.len());
+        debug_assert_eq!(alive_vals.len(), self.frontier.len());
 
         // Remove from back to front to preserve indices
         for i in (0..alive_vals.len()).rev() {
@@ -494,66 +422,24 @@ where
         //println!("Size of frontier: {:?}", self.frontier.len());
     }
 
-    pub fn tree_prune_last(&mut self, alive_vals: &[bool]) {
-        assert_eq!(alive_vals.len(), self.frontier_last.len());
+    pub fn keep_values(threshold: &T, values_0: &[T], values_1: &[T]) -> Vec<bool> {
+        values_0
+            .par_iter()
+            .zip(values_1.par_iter())
+            .map(|(value_0, value_1)| {
+                let mut vals_0_one = T::one();
+                vals_0_one.add(value_0);
 
-        // Remove from back to front to preserve indices
-        for i in (0..alive_vals.len()).rev() {
-            if !alive_vals[i] {
-                self.frontier_last.remove(i);
-            }
-        }
-
-        //println!("Size of frontier: {:?}", self.frontier.len());
+                // Keep nodes that are above threshold
+                Self::lt_const((*threshold).clone().value() as u32, &vals_0_one, value_1)
+            })
+            .collect()
     }
 
-    pub fn keep_values(nclients: usize, threshold: &T, vals0: &[T], vals1: &[T]) -> Vec<bool> {
-        assert_eq!(vals0.len(), vals1.len());
-
-        let nclients = T::from(nclients as u32);
-        let mut keep = vec![];
-        for i in 0..vals0.len() {
-            let mut v = T::zero();
-            v.add(&vals0[i]);
-            v.add(&vals1[i]);
-
-            debug_assert!(v <= nclients);
-
-            // Keep nodes that are above threshold
-            keep.push(v >= *threshold);
-        }
-
-        // println!("Keep: {}", keep.len());
-        keep
-    }
-
-    pub fn keep_values_cmp(threshold: &T, vals0: &[T], vals1: &[T]) -> Vec<bool> {
-        let mut keep = vec![];
-        let thresh = (*threshold).clone().value() as u32;
-        for i in 0..vals0.len() {
-            let mut vals_0_one = T::one();
-            vals_0_one.add(&vals0[i]);
-            let lt = Self::lt_const(thresh, &vals_0_one, &vals1[i]);
-
-            // if cfg!(debug_assertions) {
-            //     let mut v = T::zero();
-            //     v.add(&vals0[i]);
-            //     v.add(&vals1[i]);
-            //     assert_eq!(v >= *threshold, lt, "lt_const: v >= *threshold, lt");
-            // }            
-
-            // Keep nodes that are above threshold
-            keep.push(lt);
-        }
-
-        // println!("Keep: {}", keep.len());
-        keep
-    }
-
-    pub fn secret_share_bool<B>(
-        bit_array: &BitVec<B>, num_bits: usize
-    ) -> (BitVec<B>, BitVec<B>) 
-    where B: BitStore, {
+    pub fn secret_share_bool<B>(bit_array: &BitVec<B>, num_bits: usize) -> (BitVec<B>, BitVec<B>)
+    where
+        B: BitStore,
+    {
         let mut rng = rand::thread_rng();
         let mut sh_1 = BitVec::<B>::new();
         let mut sh_2 = BitVec::<B>::new();
@@ -564,23 +450,9 @@ where
         (sh_1, sh_2)
     }
 
-    pub fn reconstruct_shares_bool<B>(ss0: &BitVec<B>, ss1: &BitVec<B>) -> BitVec<B>
-    where B: BitStore, {
-        assert_eq!(ss0.len(), ss1.len());
-        let mut reconstructed = BitVec::<B>::new();
-        for (b0, b1) in ss0.iter().zip(ss1.iter()) {
-            reconstructed.push(*b0 ^ *b1);
-        }
-        reconstructed
-    }
-    
     // P0 is the Sender with inputs (m0, m1)
     // P1 is the Receiver with inputs (b, mb)
-    pub fn one_out_of_two_ot(
-        dealer: &Dealer,
-        receiver_b: u8,
-        sender_m: &Vec<u8>) -> u8
-    {
+    pub fn one_out_of_two_ot(dealer: &Dealer, receiver_b: u8, sender_m: &[u8]) -> u8 {
         let z = receiver_b ^ dealer.c;
         let y = {
             if z == 0 {
@@ -606,23 +478,17 @@ where
         // Online Phase - P1 receives r0 + p0.x * p1.y
         let r0 = rng.gen::<bool>();
         let dealer = Dealer::new();
-        let r0_x0y1 = Self::one_out_of_two_ot(
-            &dealer,
-            y1 as u8,
-            &vec![r0 as u8, (!x0 as u8) ^ (r0 as u8)]
-        ) != 0;
+        let r0_x0y1 =
+            Self::one_out_of_two_ot(&dealer, y1 as u8, &[r0 as u8, (!x0 as u8) ^ (r0 as u8)]) != 0;
 
         // Online Phase - P0 receives r1 + p1.x * p0.y
         let r1 = rng.gen::<bool>();
         let dealer = Dealer::new();
-        let r1_x1y0 = Self::one_out_of_two_ot(
-            &dealer,
-            !y0 as u8,
-            &vec![r1 as u8, (x1 as u8) ^ (r1 as u8)]
-        ) != 0;
+        let r1_x1y0 =
+            Self::one_out_of_two_ot(&dealer, !y0 as u8, &[r1 as u8, (x1 as u8) ^ (r1 as u8)]) != 0;
 
         // P0
-        let share_0 = !( (!x0 & !y0) ^ (r0 ^ r1_x1y0) );
+        let share_0 = !((!x0 & !y0) ^ (r0 ^ r1_x1y0));
 
         // P1
         let share_1 = (x1 & y1) ^ (r1 ^ r0_x0y1);
@@ -630,9 +496,14 @@ where
         (share_0, share_1)
     }
 
-    pub fn get_rand_edabit<B>(num_bits: usize) -> ((T, BitVec<B>), (T, BitVec<B>)) 
-    where 
-        B: BitStore + bitvec::store::BitStore<Unalias = B> + Eq + Copy + std::ops::Rem<Output=B> + TryFrom<u32>, 
+    pub fn get_rand_edabit<B>(num_bits: usize) -> ((T, BitVec<B>), (T, BitVec<B>))
+    where
+        B: BitStore
+            + bitvec::store::BitStore<Unalias = B>
+            + Eq
+            + Copy
+            + std::ops::Rem<Output = B>
+            + TryFrom<u32>,
         Standard: Distribution<B>,
         u32: From<B>,
     {
@@ -643,12 +514,12 @@ where
         let (r_0, r_1) = T::from(u32::from(r)).share();
         ((r_0, r_0_bits), (r_1, r_1_bits))
     }
-    
+
     // Returns c = x < R
-    fn lt_bits<B>(
-        const_r: u32, sh_0: &BitVec<B>, sh_1: &BitVec<B>
-    ) -> (u8, u8) 
-    where B: BitStore {
+    fn lt_bits<B>(const_r: u32, sh_0: &BitVec<B>, sh_1: &BitVec<B>) -> (u8, u8)
+    where
+        B: BitStore,
+    {
         let r_bits = const_r.view_bits::<Lsb0>().to_bitvec();
         let num_bits = sh_0.len();
 
@@ -668,8 +539,10 @@ where
                     if y + z < num_bits {
                         let idx_y = num_bits - 1 - y;
                         let (or_0, or_1) = Self::or_gate(
-                            y_bits_0[idx_y], y_bits_0[idx_y - z],
-                            y_bits_1[idx_y], y_bits_1[idx_y - z]
+                            y_bits_0[idx_y],
+                            y_bits_0[idx_y - z],
+                            y_bits_1[idx_y],
+                            y_bits_1[idx_y - z],
                         );
                         y_bits_0.set(idx_y - z, or_0);
                         y_bits_1.set(idx_y - z, or_1);
@@ -686,8 +559,8 @@ where
         let mut w_bits_0 = bitvec![B, Lsb0; 0; num_bits];
         let mut w_bits_1 = bitvec![B, Lsb0; 0; num_bits];
         for i in 0..num_bits {
-            w_bits_0.set(i, z_bits_0[i] ^ z_bits_0[i+1]); // -
-            w_bits_1.set(i, z_bits_1[i] ^ z_bits_1[i+1]); // -
+            w_bits_0.set(i, z_bits_0[i] ^ z_bits_0[i + 1]); // -
+            w_bits_1.set(i, z_bits_1[i] ^ z_bits_1[i + 1]); // -
         }
 
         // Step 4
@@ -698,45 +571,47 @@ where
             sum_1 += if r_bits[i] & w_bits_1[i] { 1 } else { 0 };
         }
 
-        (sum_0.view_bits::<Lsb0>().to_bitvec()[0] as u8,
-        sum_1.view_bits::<Lsb0>().to_bitvec()[0] as u8)
+        (
+            sum_0.view_bits::<Lsb0>().to_bitvec()[0] as u8,
+            sum_1.view_bits::<Lsb0>().to_bitvec()[0] as u8,
+        )
     }
 
     fn lt_const(const_r: u32, x_0: &T, x_1: &T) -> bool {
         let num_bits = 16;
         let ((r_0, r_0_bits), (r_1, r_1_bits)) = Self::get_rand_edabit::<u16>(num_bits);
         let const_m = (1 << num_bits) - 1;
-    
+
         // Step 1
         let mut a_0 = T::zero();
         a_0.add(x_0);
         a_0.add(&r_0);
-    
+
         let mut a_1 = T::zero();
         a_1.add(x_1);
         a_1.add(&r_1);
-        
+
         let b_0 = a_0.clone();
         let mut b_1 = a_1.clone();
         let const_r_fe = T::from(const_m - const_r);
         b_1.add(&const_r_fe);
-    
+
         // Step 2
         let mut a = T::zero();
         a.add(&a_0);
         a.add(&a_1);
-    
+
         let mut b = T::zero();
         b.add(&b_0);
         b.add(&b_1);
-    
+
         // Step 3
         let (w1_0, w1_1) = Self::lt_bits(a.clone().value() as u32, &r_0_bits, &r_1_bits);
         let (w2_0, w2_1) = Self::lt_bits(b.clone().value() as u32, &r_0_bits, &r_1_bits);
         let w1 = w1_0 ^ w1_1;
         let w2 = w2_0 ^ w2_1;
         let w3 = (b.clone().value() as u16) < (const_m - const_r) as u16;
-    
+
         let w1_val = w1 as i8;
         let w2_val = w2 as i8;
         let w3_val = w3 as i8;
@@ -753,79 +628,56 @@ where
         //     println!("\tw3_val: {}", w3_val);
         //     println!("\tw: x < {} : {}", const_r, c % 2);
         // }
-        
+
         c % 2 == 0
     }
 
-    pub fn keep_values_last(_nclients: usize, threshold: &U, vals0: &[Result::<U>], vals1: &[Result::<U> ]) -> Vec<bool> {
-        assert_eq!(vals0.len(), vals1.len());
+    pub fn keep_values_last(threshold: &T, cnt_values_0: &[T], cnt_values_1: &[T]) -> Vec<bool> {
+        debug_assert_eq!(cnt_values_0.len(), cnt_values_1.len());
 
-        // let nclients = U::from(_nclients as u32);
-        let mut keep = vec![];
-        for i in 0..vals0.len() {
-            let mut v = U::zero();
-            v.add(&vals0[i].value);
-            v.add(&vals1[i].value);
-            //println!("-> {:?} {:?} {:?}", v, *threshold, nclients);
+        cnt_values_0
+            .par_iter()
+            .zip(cnt_values_1.par_iter())
+            .map(|(value_0, value_1)| {
+                let mut v = T::zero();
+                v.add(value_0);
+                v.add(value_1);
 
-            // debug_assert!(v <= nclients);
-
-            // Keep nodes that are above threshold
-            keep.push(v >= *threshold);
-        }
-
-        // println!("Keep-last: {}", keep.len());
-        keep
+                v >= *threshold
+            })
+            .collect::<Vec<_>>()
     }
 
-    pub fn final_shares(&self) -> Vec<Result<U>> {
-        let mut alive = vec![];
-        for n in &self.frontier_last {
-            alive.push(Result::<U> {
+    pub fn final_shares(&self) -> Vec<Result<T>> {
+        self.frontier
+            .par_iter()
+            .map(|n| Result::<T> {
                 path: n.path.clone(),
                 value: n.value.clone(),
-            });
-            // println!("Final {:?}, value={:?}", n.path, n.value);
-        }
-
-        alive
-    }
-
-    // Reconstruct counters based on shares
-    pub fn reconstruct_shares(res0: &[U], res1: &[U]) -> Vec<U> {
-        assert_eq!(res0.len(), res1.len());
-
-        res0.par_iter()
-            .zip_eq(res1)
-            .map(|(v1, v2)| {
-                let mut v = U::zero();
-                v.add(&v1);
-                v.add(&v2);
-                v
             })
-            .collect()
+            .collect::<Vec<_>>()
     }
-    
+
     // Reconstruct counters based on shares
-    pub fn final_values(res0: &[Result<U>], res1: &[Result<U>]) -> Vec<Result<U>> {
-        assert_eq!(res0.len(), res1.len());
+    pub fn final_values(results_0: &[Result<T>], results_1: &[Result<T>]) -> Vec<Result<T>> {
+        debug_assert_eq!(results_0.len(), results_1.len());
 
-        let mut out = vec![];
-        for i in 0..res0.len() {
-            assert_eq!(res0[i].path, res1[i].path);
+        results_0
+            .par_iter()
+            .zip(results_1.par_iter())
+            .map(|(r0, r1)| {
+                debug_assert_eq!(r0.path, r1.path);
 
-            let mut v = U::zero();
-            v.add(&res0[i].value);
-            v.add(&res1[i].value);
+                let mut v = T::zero();
+                v.add(&r0.value);
+                v.add(&r1.value);
 
-            if v > U::zero() {
-                out.push(Result {
-                    path: res0[i].path.clone(),
+                Result {
+                    path: r0.path.clone(),
                     value: v,
-                });
-            }
-        }
-
-        out
+                }
+            })
+            .filter(|result| result.value > T::zero())
+            .collect::<Vec<_>>()
     }
 }

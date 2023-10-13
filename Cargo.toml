@@ -38,17 +38,9 @@ zipf = "7.0.0"
 
 
 [[bin]]
-name = "hh-server"
-path = "src/bin/hh_server.rs"
+name = "server"
+path = "src/bin/server.rs"
 
 [[bin]]
-name = "hh-leader"
-path = "src/bin/hh_leader.rs"
-
-[[bin]]
-name = "histogram-server"
-path = "src/bin/histogram_server.rs"
-
-[[bin]]
-name = "histogram-leader"
-path = "src/bin/histogram_leader.rs"
+name = "leader"
+path = "src/bin/leader.rs"
