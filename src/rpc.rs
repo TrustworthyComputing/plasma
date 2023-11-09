@@ -1,4 +1,5 @@
 use crate::collect;
+use crate::consts::XOF_SIZE;
 use crate::dpf;
 
 use serde::Deserialize;
@@ -70,9 +71,9 @@ pub trait Collector {
     async fn tree_init(req: TreeInitRequest) -> String;
     async fn tree_crawl(req: TreeCrawlRequest) -> Vec<u64>;
     async fn tree_crawl_last(req: TreeCrawlLastRequest) -> Vec<u64>;
-    async fn get_proofs(req: GetProofsRequest) -> Vec<[u8; 32]>;
-    async fn get_merkle_roots(req: GetMerkleRootsRequest) -> (Vec<[u8; 32]>, Vec<usize>);
+    async fn get_proofs(req: GetProofsRequest) -> Vec<[u8; XOF_SIZE]>;
+    async fn get_merkle_roots(req: GetMerkleRootsRequest) -> (Vec<[u8; XOF_SIZE]>, Vec<usize>);
     async fn tree_prune(req: TreePruneRequest) -> String;
-    async fn compute_hashes(req: ComputeHashesRequest) -> Vec<Vec<u8>>;
+    async fn compute_hashes(req: ComputeHashesRequest) -> Vec<[u8; XOF_SIZE]>;
     async fn final_shares(req: FinalSharesRequest) -> Vec<collect::Result<u64>>;
 }

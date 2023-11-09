@@ -1,3 +1,5 @@
+pub const XOF_SIZE: usize = 12;
+
 // A separator used to break the code into two parts to aid memorability.
 pub const SEPARATOR: char = '+';
 

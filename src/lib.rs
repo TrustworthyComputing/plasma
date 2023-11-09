@@ -14,6 +14,7 @@ mod private;
 pub use codearea::CodeArea;
 
 mod interface;
+use consts::XOF_SIZE;
 pub use interface::{
     decode, encode, from_bit_string, is_full, is_short, is_valid, recover_nearest, shorten,
     to_bit_string,
@@ -22,7 +23,6 @@ pub use interface::{
 use rayon::prelude::*;
 
 pub use crate::rpc::CollectorClient as HHCollectorClient;
-use itertools::Itertools;
 
 // Additive group, such as (Z_n, +)
 pub trait Group {
@@ -115,27 +115,24 @@ pub fn bits_to_bitstring(bits: &[bool]) -> String {
 }
 
 pub fn xor_vec(v1: &[u8], v2: &[u8]) -> Vec<u8> {
-    v1.iter()
-        .zip_eq(v2.iter())
-        .map(|(&x1, &x2)| x1 ^ x2)
-        .collect()
+    v1.iter().zip(v2.iter()).map(|(&x1, &x2)| x1 ^ x2).collect()
 }
 
 pub fn xor_in_place(v1: &mut [u8], v2: &[u8]) {
-    for (x1, &x2) in v1.iter_mut().zip_eq(v2.iter()) {
+    for (x1, &x2) in v1.iter_mut().zip(v2.iter()) {
         *x1 ^= x2;
     }
 }
 
 pub fn xor_three_vecs(v1: &[u8], v2: &[u8], v3: &[u8]) -> Vec<u8> {
     v1.iter()
-        .zip_eq(v2.iter())
-        .zip_eq(v3.iter())
+        .zip(v2.iter())
+        .zip(v3.iter())
         .map(|((&x1, &x2), &x3)| x1 ^ x2 ^ x3)
         .collect()
 }
 
-pub fn check_hashes(hashes_0: &Vec<[u8; 32]>, hashes_1: &Vec<[u8; 32]>) -> bool {
+pub fn check_hashes(hashes_0: &[[u8; XOF_SIZE]], hashes_1: &[[u8; XOF_SIZE]]) -> bool {
     hashes_0
         .par_iter()
         .zip(hashes_1.par_iter())

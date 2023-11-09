@@ -2,7 +2,9 @@ use crate::dpf;
 use crate::prg;
 use crate::{xor_in_place, xor_vec};
 
+use crate::consts::XOF_SIZE;
 use bitvec::prelude::*;
+use blake3::hash;
 use core::convert::TryFrom;
 use fast_math::log2_raw;
 use rand::distributions::Standard;
@@ -12,19 +14,15 @@ use rayon::prelude::*;
 use rs_merkle::Hasher;
 use rs_merkle::MerkleTree;
 use serde::{Deserialize, Serialize};
-use sha2::digest::FixedOutput;
-use sha2::{Digest, Sha256};
 
 #[derive(Clone)]
-pub struct Sha256Algorithm {}
+pub struct HashAlg {}
 
-impl Hasher for Sha256Algorithm {
-    type Hash = [u8; 32];
+impl Hasher for HashAlg {
+    type Hash = [u8; XOF_SIZE];
 
-    fn hash(data: &[u8]) -> [u8; 32] {
-        let mut hasher = Sha256::new();
-        hasher.update(data);
-        <[u8; 32]>::from(hasher.finalize_fixed())
+    fn hash(data: &[u8]) -> [u8; XOF_SIZE] {
+        hash(data).as_bytes()[0..XOF_SIZE].try_into().unwrap()
     }
 }
 
@@ -46,8 +44,8 @@ pub struct KeyCollection<T> {
     pub keys: Vec<(bool, dpf::DPFKey<T>)>,
     frontier: Vec<TreeNode<T>>,
     prev_frontier: Vec<TreeNode<T>>,
-    final_proofs: Vec<[u8; 32]>,
-    mtree_roots: Vec<[u8; 32]>,
+    final_proofs: Vec<[u8; XOF_SIZE]>,
+    mtree_roots: Vec<[u8; XOF_SIZE]>,
     mtree_indices: Vec<usize>,
 }
 
@@ -143,17 +141,16 @@ where
         let (key_states, key_values): (Vec<dpf::EvalState>, Vec<T>) = self
             .keys
             .par_iter()
-            .enumerate()
-            .map(|(i, key)| key.1.eval_bit(&parent.key_states[i], dir, &bit_str))
+            .zip(&parent.key_states)
+            .map(|(key, parent_state)| key.1.eval_bit(parent_state, dir, &bit_str))
             .unzip();
 
         let mut child_val = T::zero();
-        for (i, v) in key_values.iter().enumerate() {
-            // Add in only live values
-            if self.keys[i].0 {
-                child_val.add(v);
-            }
-        }
+        key_values
+            .iter()
+            .zip(&self.keys)
+            .filter(|&(_, key)| key.0)
+            .for_each(|(v, _)| child_val.add(v));
 
         let mut child = TreeNode::<T> {
             path: parent.path.clone(),
@@ -202,21 +199,6 @@ where
                 vec![child_0, child_1]
             })
             .collect::<Vec<TreeNode<T>>>();
-
-        // Combine the multiple proofs for each client into a single proof for each client.
-        let num_clients = next_frontier.get(0).map_or(0, |node| node.key_states.len());
-        let mut key_proofs: Vec<_> = vec![[0u8; 32]; num_clients];
-        key_proofs
-            .par_iter_mut()
-            .enumerate()
-            .zip_eq(&self.keys)
-            .for_each(|((proof_index, proof), key)| {
-                if key.0 {
-                    for node in next_frontier.iter() {
-                        xor_in_place(proof, &node.key_states[proof_index].proof);
-                    }
-                }
-            });
 
         // For all prefixes, compute the checks for each client.
         let all_y_checks = self
@@ -268,35 +250,35 @@ where
             })
             .collect::<Vec<_>>();
 
-        // Now, we combine all the checks for each client into a single check for each client.
-        let key_checks = all_y_checks[0] // parallelize the clients
+        let combined_hashes = self
+            .keys
             .par_iter()
             .enumerate()
-            .zip_eq(&self.keys)
-            .map(|((client_index, _), key)| {
-                let mut hasher = Sha256::new();
-                // If the client is honest.
-                if key.0 {
-                    all_y_checks.iter().for_each(|checks_for_prefix| {
-                        hasher.update(
-                            checks_for_prefix[client_index]
-                                .clone()
-                                .value()
-                                .to_le_bytes(),
-                        );
-                    });
-                }
-                hasher.finalize().to_vec()
+            .filter(|(_, key)| key.0)
+            .map(|(client_index, _)| {
+                // Combine the multiple proofs that each client has for each prefix into a single
+                // proof for each client.
+                let mut proof = [0u8; XOF_SIZE];
+                next_frontier.iter().for_each(|node| {
+                    xor_in_place(&mut proof, &node.key_states[client_index].proof);
+                });
+
+                // Combine all the checks that each client has for each prefix into a single check
+                // for each client.
+                let mut check = [0u8; 8];
+                all_y_checks.iter().for_each(|checks_for_prefix| {
+                    xor_in_place(
+                        &mut check,
+                        &checks_for_prefix[client_index]
+                            .clone()
+                            .value()
+                            .to_le_bytes(),
+                    );
+                });
+
+                xor_vec(&proof, hash(&check).as_bytes()).try_into().unwrap()
             })
-            .collect::<Vec<_>>();
-
-        debug_assert_eq!(key_proofs.len(), key_checks.len());
-
-        let combined_hashes = key_proofs
-            .par_iter()
-            .zip(key_checks.par_iter())
-            .map(|(proof, check)| xor_vec(proof, check).try_into().unwrap())
-            .collect::<Vec<[u8; 32]>>();
+            .collect::<Vec<[u8; XOF_SIZE]>>();
 
         // Compute the Merkle tree based on y_checks for each client and the proofs.
         // If we are at the last level, we only need to compute the root as the malicious clients
@@ -311,13 +293,13 @@ where
         self.mtree_roots = vec![];
         self.mtree_indices = vec![];
         if split_by == 1 {
-            let mt = MerkleTree::<Sha256Algorithm>::from_leaves(chunks_list[0]);
+            let mt = MerkleTree::<HashAlg>::from_leaves(chunks_list[0]);
             let root = mt.root().unwrap();
             self.mtree_roots.push(root);
             self.mtree_indices.push(0);
         } else {
             for &i in malicious {
-                let mt_left = MerkleTree::<Sha256Algorithm>::from_leaves(chunks_list[i * 2]);
+                let mt_left = MerkleTree::<HashAlg>::from_leaves(chunks_list[i * 2]);
                 let root_left = mt_left.root().unwrap();
                 self.mtree_roots.push(root_left);
                 self.mtree_indices.push(i * 2);
@@ -325,7 +307,7 @@ where
                 if i * 2 + 1 >= chunks_list.len() {
                     continue;
                 }
-                let mt_right = MerkleTree::<Sha256Algorithm>::from_leaves(chunks_list[i * 2 + 1]);
+                let mt_right = MerkleTree::<HashAlg>::from_leaves(chunks_list[i * 2 + 1]);
                 let root_right = mt_right.root().unwrap();
                 self.mtree_roots.push(root_right);
                 self.mtree_indices.push(i * 2 + 1);
@@ -342,19 +324,22 @@ where
             .collect::<Vec<T>>()
     }
 
-    pub fn get_merkle_roots(&self, start: usize, mut end: usize) -> (Vec<[u8; 32]>, Vec<usize>) {
-        let mut roots = Vec::new();
-        let mut indices = Vec::new();
-
+    pub fn get_merkle_roots(
+        &self,
+        start: usize,
+        mut end: usize,
+    ) -> (Vec<[u8; XOF_SIZE]>, Vec<usize>) {
         if end > self.mtree_roots.len() {
             end = self.mtree_roots.len();
         }
         if end > start {
-            roots.extend_from_slice(&self.mtree_roots[start..end]);
-            indices.extend_from_slice(&self.mtree_indices[start..end]);
+            (
+                self.mtree_roots[start..end].to_vec(),
+                self.mtree_indices[start..end].to_vec(),
+            )
+        } else {
+            (vec![], vec![])
         }
-
-        (roots, indices)
     }
 
     pub fn tree_crawl_last(&mut self) -> Vec<T> {
@@ -369,20 +354,20 @@ where
             })
             .collect::<Vec<TreeNode<T>>>();
 
-        let num_clients = next_frontier.get(0).map_or(0, |node| node.key_states.len());
-        self.final_proofs = vec![[0u8; 32]; num_clients];
-        self.final_proofs
-            .par_iter_mut()
+        self.final_proofs = self
+            .keys
+            .par_iter()
             .enumerate()
-            .zip_eq(&self.keys)
-            .for_each(|((proof_index, proof), key)| {
-                // If the client is honest.
-                if key.0 {
-                    for node in next_frontier.iter() {
-                        xor_in_place(proof, &node.key_states[proof_index].proof);
-                    }
-                }
-            });
+            .filter(|(_, key)| key.0) // If the client is honest.
+            .map(|(proof_index, _)| {
+                let mut proof = [0u8; XOF_SIZE];
+                next_frontier.iter().for_each(|node| {
+                    xor_in_place(&mut proof, &node.key_states[proof_index].proof);
+                });
+
+                proof
+            })
+            .collect::<Vec<_>>();
 
         self.frontier = next_frontier;
 
@@ -400,13 +385,12 @@ where
             .collect::<Vec<_>>()
     }
 
-    pub fn get_proofs(&self, start: usize, end: usize) -> Vec<[u8; 32]> {
-        let mut proofs = Vec::new();
+    pub fn get_proofs(&self, start: usize, end: usize) -> Vec<[u8; XOF_SIZE]> {
         if end > start && end <= self.final_proofs.len() {
-            proofs.extend_from_slice(&self.final_proofs[start..end]);
+            self.final_proofs[start..end].to_vec()
+        } else {
+            vec![]
         }
-
-        proofs
     }
 
     pub fn tree_prune(&mut self, alive_vals: &[bool]) {

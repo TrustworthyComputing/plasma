@@ -1,5 +1,7 @@
 use plasma::{
-    collect, config, prg,
+    collect, config,
+    consts::XOF_SIZE,
+    prg,
     rpc::{
         AddKeysRequest, Collector, ComputeHashesRequest, FinalSharesRequest, GetMerkleRootsRequest,
         GetProofsRequest, ResetRequest, TreeCrawlLastRequest, TreeCrawlRequest, TreeInitRequest,
@@ -8,10 +10,11 @@ use plasma::{
     Group,
 };
 
+use blake3::Hasher;
 use futures::{future, prelude::*};
 use rayon::prelude::*;
-use sha2::{Digest, Sha256};
 use std::time::Instant;
+
 use std::{
     io,
     sync::{Arc, Mutex},
@@ -95,7 +98,7 @@ impl Collector for BatchCollectorServer {
         self,
         _: context::Context,
         req: GetMerkleRootsRequest,
-    ) -> (Vec<[u8; 32]>, Vec<usize>) {
+    ) -> (Vec<[u8; XOF_SIZE]>, Vec<usize>) {
         let client_idx = req.client_idx as usize;
         debug_assert!(client_idx <= 2);
         let coll = self.cs[client_idx].arc.lock().unwrap();
@@ -117,7 +120,7 @@ impl Collector for BatchCollectorServer {
         res
     }
 
-    async fn get_proofs(self, _: context::Context, req: GetProofsRequest) -> Vec<[u8; 32]> {
+    async fn get_proofs(self, _: context::Context, req: GetProofsRequest) -> Vec<[u8; XOF_SIZE]> {
         let client_idx = req.client_idx as usize;
         debug_assert!(client_idx <= 2);
         let coll = self.cs[client_idx].arc.lock().unwrap();
@@ -133,7 +136,11 @@ impl Collector for BatchCollectorServer {
         "Done".to_string()
     }
 
-    async fn compute_hashes(self, _: context::Context, req: ComputeHashesRequest) -> Vec<Vec<u8>> {
+    async fn compute_hashes(
+        self,
+        _: context::Context,
+        req: ComputeHashesRequest,
+    ) -> Vec<[u8; XOF_SIZE]> {
         let start = Instant::now();
         let client_idx = req.client_idx as usize;
         debug_assert!(client_idx <= 2);
@@ -158,13 +165,18 @@ impl Collector for BatchCollectorServer {
                     .collect(),
             );
         }
-        let mut hashes: Vec<Vec<u8>> = vec![];
-        let mut hasher = Sha256::new();
+        let mut hashes: Vec<[u8; XOF_SIZE]> = vec![];
+        let mut hasher = Hasher::new();
         for y0_y1_client in &y0_y1 {
             for y in y0_y1_client.iter() {
-                hasher.update(y.value().to_string());
+                hasher.update(&y.to_le_bytes());
             }
-            hashes.push(hasher.finalize_reset().to_vec());
+            hashes.push(
+                hasher.finalize().as_bytes()[0..XOF_SIZE]
+                    .try_into()
+                    .unwrap(),
+            );
+            hasher.reset();
         }
         println!(
             "session {:?}: compute_hashes: {:?}",

@@ -1,10 +1,11 @@
 use crate::prg;
+use crate::xor_vec;
 use crate::Group;
-use crate::{xor_three_vecs, xor_vec};
 
+use crate::consts::XOF_SIZE;
+use blake3::Hasher;
 use serde::Deserialize;
 use serde::Serialize;
-use sha2::{Digest, Sha256};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct CorWord<T> {
@@ -26,7 +27,7 @@ pub struct EvalState {
     level: usize,
     pub seed: prg::PrgSeed,
     pub bit: bool,
-    pub proof: Vec<u8>,
+    pub proof: [u8; XOF_SIZE],
 }
 
 trait TupleMapToExt<T, U> {
@@ -152,10 +153,10 @@ where
         let mut seeds = root_seeds.clone();
         let mut bits = root_bits;
 
-        let mut hasher = Sha256::new();
         let mut cor_words: Vec<CorWord<T>> = Vec::new();
         let mut cs: Vec<Vec<u8>> = Vec::new();
         let mut bit_str: String = "".to_string();
+        let mut hasher = Hasher::new();
         for i in 0..alpha_bits.len() {
             let bit = alpha_bits[i];
             bit_str.push_str(if bit { "1" } else { "0" });
@@ -163,16 +164,18 @@ where
             cor_words.push(cw);
 
             let pi_0 = {
-                hasher.update(&bit_str);
-                hasher.update(seeds.0.key);
-                hasher.finalize_reset().to_vec()
+                hasher.reset();
+                hasher.update_rayon(bit_str.as_bytes());
+                hasher.update_rayon(&seeds.0.key);
+                hasher.finalize()
             };
             let pi_1 = {
-                hasher.update(&bit_str);
-                hasher.update(seeds.1.key);
-                hasher.finalize_reset().to_vec()
+                hasher.reset();
+                hasher.update_rayon(bit_str.as_bytes());
+                hasher.update_rayon(&seeds.1.key);
+                hasher.finalize()
             };
-            cs.push(crate::xor_vec(&pi_0, &pi_1));
+            cs.push(xor_vec(pi_0.as_bytes(), pi_1.as_bytes()));
         }
 
         (
@@ -214,32 +217,33 @@ where
         }
 
         // Compute proofs
-        let mut hasher = Sha256::new();
-        let pi_prime = {
-            hasher.update(bit_str);
-            hasher.update(new_seed.key);
-            hasher.finalize_reset().to_vec()
-        };
         let h2 = {
-            let h: [u8; 32] = if !new_bit {
-                // H(pi ^ pi_prime)
-                xor_vec(&state.proof, &pi_prime).try_into().unwrap()
+            let mut hasher = Hasher::new();
+            hasher.update_rayon(bit_str.as_bytes());
+            hasher.update_rayon(&new_seed.key);
+            let pi_prime = hasher.finalize();
+
+            let h = if !new_bit {
+                pi_prime.as_bytes().to_vec()
             } else {
-                //  H(pi ^ pi_prime ^ cs)
-                xor_three_vecs(&state.proof, &pi_prime, &self.cs[state.level])
-                    .try_into()
-                    .unwrap()
+                xor_vec(&self.cs[state.level], pi_prime.as_bytes())
             };
-            hasher.update(h);
-            &hasher.finalize_reset()
+            hasher.reset();
+            hasher.update_rayon(&h);
+            hasher.finalize()
         };
+        // TODO
+        let proof = xor_vec(h2.as_bytes(), &state.proof)
+            .as_slice()
+            .try_into()
+            .unwrap();
 
         (
             EvalState {
                 level: state.level + 1,
                 seed: new_seed,
                 bit: new_bit,
-                proof: xor_vec(h2, &state.proof),
+                proof,
             },
             word,
         )
@@ -250,18 +254,18 @@ where
             level: 0,
             seed: self.root_seed.clone(),
             bit: self.key_idx,
-            proof: vec![0u8; 32],
+            proof: [0u8; XOF_SIZE],
         }
     }
 
-    pub fn eval(&self, idx: &[bool], pi: &mut Vec<u8>) -> (Vec<T>, T) {
+    pub fn eval(&self, idx: &[bool], pi: &mut [u8; XOF_SIZE]) -> (Vec<T>, T) {
         debug_assert!(idx.len() <= self.domain_size());
         debug_assert!(!idx.is_empty());
         let mut out = vec![];
         let mut state = self.eval_init();
 
         let mut bit_str: String = "".to_string();
-        state.proof = pi.to_vec();
+        state.proof = *pi;
 
         for &bit in idx.iter().take(idx.len() - 1) {
             bit_str.push(if bit { '1' } else { '0' });
