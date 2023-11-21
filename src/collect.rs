@@ -80,9 +80,9 @@ impl Default for Dealer {
     }
 }
 
-fn is_server_zero_in_session(server_id: i8, session_index: usize) -> bool {
-    if ((server_id == 2 || server_id == 1 || server_id == 0) && session_index == 0)
-        || (server_id == 0 && session_index == 1)
+fn is_server_zero_in_session(server_id: i8, session_idx: usize) -> bool {
+    if ((server_id == 2 || server_id == 1 || server_id == 0) && session_idx == 0)
+        || (server_id == 0 && session_idx == 1)
     {
         return true;
     }
@@ -166,7 +166,7 @@ where
 
     pub fn tree_crawl(
         &mut self,
-        session_index: usize,
+        session_idx: usize,
         mut split_by: usize,
         malicious: &Vec<usize>,
         is_last: bool,
@@ -177,14 +177,18 @@ where
                     self.keys[malicious_client].0 = false;
                     println!(
                         "SID {}) removing malicious client {}",
-                        session_index, malicious_client
+                        session_idx, malicious_client
                     );
                 }
             }
             self.frontier = self.prev_frontier.clone();
         }
 
-        let level = self.frontier[0].path.len();
+        let level = if self.frontier.is_empty() {
+            0
+        } else {
+            self.frontier[0].path.len()
+        };
         debug_assert!(level < self.depth);
         // println!("Level {}", level);
 
@@ -223,7 +227,7 @@ where
                         let mut value_check = T::zero();
                         if level == 0 {
                             // (1 - server_id) + (-1)^server_id * (- y^{p||0} - y^{p||1})
-                            if is_server_zero_in_session(self.server_id, session_index) {
+                            if is_server_zero_in_session(self.server_id, session_idx) {
                                 value_check.add(&T::one());
                                 value_check.sub(y_p0);
                                 value_check.sub(y_p1);
@@ -233,7 +237,7 @@ where
                             }
                         } else {
                             // (-1)^server_id * (y^{p} - y^{p||0} - y^{p||1})
-                            if is_server_zero_in_session(self.server_id, session_index) {
+                            if is_server_zero_in_session(self.server_id, session_idx) {
                                 value_check.add(y_p);
                                 value_check.sub(y_p0);
                                 value_check.sub(y_p1);
@@ -290,27 +294,29 @@ where
         let chunk_sz = num_leaves / split_by;
         let chunks_list = combined_hashes.chunks(chunk_sz).collect::<Vec<_>>();
 
-        self.mtree_roots = vec![];
-        self.mtree_indices = vec![];
-        if split_by == 1 {
-            let mt = MerkleTree::<HashAlg>::from_leaves(chunks_list[0]);
-            let root = mt.root().unwrap();
-            self.mtree_roots.push(root);
-            self.mtree_indices.push(0);
-        } else {
-            for &i in malicious {
-                let mt_left = MerkleTree::<HashAlg>::from_leaves(chunks_list[i * 2]);
-                let root_left = mt_left.root().unwrap();
-                self.mtree_roots.push(root_left);
-                self.mtree_indices.push(i * 2);
+        if (self.server_id == 0 && session_idx == 2) || (self.server_id == 2 && session_idx == 0) {
+            self.mtree_roots = vec![];
+            self.mtree_indices = vec![];
+            if split_by == 1 {
+                let mt = MerkleTree::<HashAlg>::from_leaves(chunks_list[0]);
+                let root = mt.root().unwrap();
+                self.mtree_roots.push(root);
+                self.mtree_indices.push(0);
+            } else {
+                for &i in malicious {
+                    let mt_left = MerkleTree::<HashAlg>::from_leaves(chunks_list[i * 2]);
+                    let root_left = mt_left.root().unwrap();
+                    self.mtree_roots.push(root_left);
+                    self.mtree_indices.push(i * 2);
 
-                if i * 2 + 1 >= chunks_list.len() {
-                    continue;
+                    if i * 2 + 1 >= chunks_list.len() {
+                        continue;
+                    }
+                    let mt_right = MerkleTree::<HashAlg>::from_leaves(chunks_list[i * 2 + 1]);
+                    let root_right = mt_right.root().unwrap();
+                    self.mtree_roots.push(root_right);
+                    self.mtree_indices.push(i * 2 + 1);
                 }
-                let mt_right = MerkleTree::<HashAlg>::from_leaves(chunks_list[i * 2 + 1]);
-                let root_right = mt_right.root().unwrap();
-                self.mtree_roots.push(root_right);
-                self.mtree_indices.push(i * 2 + 1);
             }
         }
 

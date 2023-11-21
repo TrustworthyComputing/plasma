@@ -19,7 +19,7 @@ pub struct DPFKey<T> {
     pub key_idx: bool,
     root_seed: prg::PrgSeed,
     cor_words: Vec<CorWord<T>>,
-    pub cs: Vec<Vec<u8>>,
+    pub cs: Vec<[u8; XOF_SIZE]>,
 }
 
 #[derive(Clone, Debug)]
@@ -154,8 +154,8 @@ where
         let mut bits = root_bits;
 
         let mut cor_words: Vec<CorWord<T>> = Vec::new();
-        let mut cs: Vec<Vec<u8>> = Vec::new();
-        let mut bit_str: String = "".to_string();
+        let mut cs: Vec<[u8; XOF_SIZE]> = Vec::new();
+        let mut bit_str = "".to_string();
         let mut hasher = Hasher::new();
         for i in 0..alpha_bits.len() {
             let bit = alpha_bits[i];
@@ -175,7 +175,11 @@ where
                 hasher.update_rayon(&seeds.1.key);
                 hasher.finalize()
             };
-            cs.push(xor_vec(pi_0.as_bytes(), pi_1.as_bytes()));
+            cs.push(
+                xor_vec(&pi_0.as_bytes()[..XOF_SIZE], &pi_1.as_bytes()[..XOF_SIZE])[..XOF_SIZE]
+                    .try_into()
+                    .unwrap(),
+            );
         }
 
         (
@@ -223,16 +227,17 @@ where
             hasher.update_rayon(&new_seed.key);
             let pi_prime = hasher.finalize();
 
-            let h = if !new_bit {
-                pi_prime.as_bytes().to_vec()
+            let h: [u8; XOF_SIZE] = if !new_bit {
+                pi_prime.as_bytes()[..XOF_SIZE].try_into().unwrap()
             } else {
-                xor_vec(&self.cs[state.level], pi_prime.as_bytes())
+                xor_vec(&self.cs[state.level], &pi_prime.as_bytes()[..XOF_SIZE])[..XOF_SIZE]
+                    .try_into()
+                    .unwrap()
             };
             hasher.reset();
             hasher.update_rayon(&h);
             hasher.finalize()
         };
-        // TODO
         let proof = xor_vec(h2.as_bytes(), &state.proof)
             .as_slice()
             .try_into()
