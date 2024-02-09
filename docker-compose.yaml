@@ -1,0 +1,56 @@
+version: '3.0'
+
+services:
+  server-0:
+    container_name: 'server-0'
+    image: plasma
+    build:
+      context: .
+      dockerfile: Dockerfile
+    entrypoint: '/opt/plasma/bin/server'
+    command: >-
+      --config bin/config_8.json
+      --server_id 0
+
+  server-1:
+    container_name: 'server-1'
+    image: plasma
+    build:
+      context: .
+      dockerfile: Dockerfile
+    entrypoint: '/opt/plasma/bin/server'
+    command: >-
+      --config bin/config_8.json
+      --server_id 1
+
+  server-2:
+    container_name: 'server-2'
+    image: plasma
+    build:
+      context: .
+      dockerfile: Dockerfile
+    entrypoint: '/opt/plasma/bin/server'
+    command: >-
+      --config bin/config_8.json
+      --server_id 2
+
+  leader:
+    container_name: 'leader'
+    depends_on:
+      server-0:
+        condition: service_started
+      server-1:
+        condition: service_started
+      server-2:
+        condition: service_started
+    image: plasma
+    build:
+      context: .
+      dockerfile: Dockerfile
+    entrypoint: '/opt/plasma/bin/leader'
+    command: >-
+      --config bin/config_8.json
+      --server-0 server-0:8000
+      --server-1 server-1:8001
+      --server-2 server-2:8002
+      -n 1000

@@ -7,19 +7,28 @@ This repository builds upon [heavy-hitters](https://github.com/henrycg/heavyhitt
 
 
 ### How to cite this work
-The preprint can be accessed [here](https://eprint.iacr.org/2023/080); you can cite this work as follows:
-```
-@Misc{EPRINT:MouSarTso23,
+PLASMA will appear in [PoPETS 2024](https://petsymposium.org/popets/2024/) (the preprint can be accessed [here](https://eprint.iacr.org/2023/080)).
+You can cite this work as follows:
+```bibtex
+@Article{PoPETS:MouSarTso24,
   author =       "Dimitris Mouris and
                   Pratik Sarkar and
                   Nektarios Georgios Tsoutsos",
   title =        "{PLASMA: Private, Lightweight Aggregated Statistics against Malicious Adversaries}",
-  year =         2023,
-  howpublished = "Cryptology ePrint Archive, Report 2023/080",
-  note =         "\url{https://eprint.iacr.org/2023/080}",
+  year =         2024,
+  volume =       2024,
+  month =        July,
+  journal =      "{Proceedings on Privacy Enhancing Technologies}",
+  number =       3,
+  pages =        "1--19",
 }
 ```
 
+## Build & Run With Docker Compose
+The following runs three servers and the leader each in a different container:
+```bash
+❯❯ docker compose up
+```
 
 ## Getting started
 First, make sure that you have a working Rust installation:

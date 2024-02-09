@@ -599,6 +599,7 @@ async fn run_level_last(
     clients: &[&Client],
     num_clients: usize,
 ) -> io::Result<()> {
+    let start_last = Instant::now();
     let threshold = core::cmp::max(1, (cfg.threshold * (num_clients as f64)) as u64);
 
     // Session 0
@@ -884,7 +885,11 @@ async fn run_level_last(
             .await
     });
     let (shares_0, shares_1) = (response_0.await?.unwrap(), response_1.await?.unwrap());
-
+    println!(
+        "- Time for level {}: {:?}",
+        cfg.data_bytes * 8,
+        start_last.elapsed().as_secs_f64()
+    );
     for res in &collect::KeyCollection::<u64>::final_values(&shares_0, &shares_1) {
         let bits = plasma::bits_to_bitstring(&res.path);
         if res.value > 0 {
@@ -897,26 +902,23 @@ async fn run_level_last(
 
 #[tokio::main]
 async fn main() -> io::Result<()> {
-    //println!("Using only one thread!");
-    //rayon::ThreadPoolBuilder::new().num_threads(1).build_global().unwrap();
-
     env_logger::init();
     let (cfg, _, num_clients, malicious) = config::get_args("Leader", false, true, true);
     debug_assert!((0.0..0.8).contains(&malicious));
     println!("Running with {}% malicious clients", malicious * 100.0);
     let client_0 = Client::new(
         client::Config::default(),
-        tcp::connect(cfg.server_0, Bincode::default).await?,
+        tcp::connect(cfg.server_0.clone(), Bincode::default).await?,
     )
     .spawn();
     let client_1 = Client::new(
         client::Config::default(),
-        tcp::connect(cfg.server_1, Bincode::default).await?,
+        tcp::connect(cfg.server_1.clone(), Bincode::default).await?,
     )
     .spawn();
     let client_2 = Client::new(
         client::Config::default(),
-        tcp::connect(cfg.server_2, Bincode::default).await?,
+        tcp::connect(cfg.server_2.clone(), Bincode::default).await?,
     )
     .spawn();
 
@@ -958,27 +960,17 @@ async fn main() -> io::Result<()> {
 
     let start = Instant::now();
     let bit_len = cfg.data_bytes * 8; // bits
-    for _level in 0..bit_len - 1 {
+    for level in 0..bit_len - 1 {
         let start_level = Instant::now();
         run_level(&cfg, &clients, num_clients).await?;
         println!(
-            "Time for level {}: {:?}",
-            _level,
+            "- Time for level {}: {:?}",
+            level + 1,
             start_level.elapsed().as_secs_f64()
         );
     }
-    println!(
-        "\nTime for {} levels: {:?}",
-        bit_len,
-        start.elapsed().as_secs_f64()
-    );
-
-    let start_last = Instant::now();
     run_level_last(&cfg, &clients, num_clients).await?;
-    println!(
-        "Time for last level: {:?}",
-        start_last.elapsed().as_secs_f64()
-    );
+
     println!("Total time {:?}", start.elapsed().as_secs_f64());
 
     Ok(())
