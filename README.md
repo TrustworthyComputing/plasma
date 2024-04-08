@@ -39,13 +39,20 @@ rustc 1.67.1
 ❯❯ cargo --version
 cargo 1.67.1
 ```
+Note that we don't require the exact Rust version, but this is the one we used in our experiments.
 
 ### Build from sources
 ```bash
 cargo build --release
 ```
 
+Run the tests:
+```bash
+cargo test --release
+```
+
 ## Heavy Hitters
+First off, run the servers in different shells.
 
 Server 0:
 ```bash
