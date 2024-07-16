@@ -107,6 +107,9 @@ The parameters are:
 * `addkey_batch_size`: The number of each type of RPC request to bundle together. The underlying RPC library has an annoying limit on the size of each RPC request, so you cannot set these values too large.
 * `unique_buckets` and `zipf_exponent`: Each simulated client samples its private string from a Zipf distribution over strings with parameter `zipf_exponent` and support `unique_buckets`.
 
+## Acknowledgments
+This work was supported by the National Science Foundation (Awards #2239334 #1931714, #1414119) and the DARPA SIEVE program.
+
 <p align="center">
     <img src="./logos/twc.png" height="20%" width="20%">
 </p>
